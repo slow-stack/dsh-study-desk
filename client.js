@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
 
     const API = '/api/dsh-study-desk'
     const PANEL_ID = 'study-desk'
+    const MINI_POS_KEY = 'dsh-study-desk:mini-pos'
 
     const EXAM = { name: '2027 届考研初试', start: '2026-12-19', end: '2026-12-20', note: '631 公共管理 + 864' }
     const MILESTONES = [
@@ -800,24 +801,127 @@ window.__ModuleLoader__.load({
     // 常驻迷你计时条（shell.overlay）
     // -----------------------------------------------------------------------
 
+    // 迷你条的落点：存 localStorage，纯本地偏好，不占 desk.json
+    function readMiniPos() {
+      try {
+        const raw = window.localStorage.getItem(MINI_POS_KEY)
+        if (!raw) return null
+        const p = JSON.parse(raw)
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y }
+      } catch (error) { /* 读不到就当没挪过 */ }
+      return null
+    }
+
+    function writeMiniPos(p) {
+      try {
+        if (!p) window.localStorage.removeItem(MINI_POS_KEY)
+        else window.localStorage.setItem(MINI_POS_KEY, JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) }))
+      } catch (error) { /* 写不进去就这一次不记 */ }
+    }
+
+    // 拖出去不许丢：永远留一条边在视口里
+    function clampMiniPos(p, w, h) {
+      const pad = 6
+      const vw = window.innerWidth || 0
+      const vh = window.innerHeight || 0
+      const maxX = Math.max(pad, vw - (w || 0) - pad)
+      const maxY = Math.max(pad, vh - (h || 0) - pad)
+      return { x: Math.min(Math.max(pad, p.x), maxX), y: Math.min(Math.max(pad, p.y), maxY) }
+    }
+
     function MiniBar({ now }) {
       const s = useStore()
       useTick(500)
       usePoll(30000)
       const [open, setOpen] = React.useState(false)
       const [hidden, setHidden] = React.useState(false)
+      const [pos, setPos] = React.useState(readMiniPos)
+      const dragRef = React.useRef(null)
+      const rootRef = React.useRef(null)
+      const justDraggedRef = React.useRef(false)
       const timer = s.state.timer
+
+      // 拖动：只在非按钮处按下才起拖，按钮该收的还是收到点击
+      const dragHandlers = {
+        onPointerDown: (event) => {
+          if (event.button !== 0) return
+          if (event.target && event.target.closest && event.target.closest('button')) return
+          const el = event.currentTarget
+          const rect = el.getBoundingClientRect()
+          dragRef.current = {
+            dx: event.clientX - rect.left,
+            dy: event.clientY - rect.top,
+            w: rect.width,
+            h: rect.height,
+            moved: false,
+          }
+          try { el.setPointerCapture(event.pointerId) } catch (error) { /* 拿不到捕获也照样能拖 */ }
+        },
+        onPointerMove: (event) => {
+          const d = dragRef.current
+          if (!d) return
+          d.moved = true
+          setPos(clampMiniPos({ x: event.clientX - d.dx, y: event.clientY - d.dy }, d.w, d.h))
+        },
+        onPointerUp: (event) => {
+          const d = dragRef.current
+          dragRef.current = null
+          if (!d) return
+          try { event.currentTarget.releasePointerCapture(event.pointerId) } catch (error) { /* 同上 */ }
+          if (d.moved) {
+            // 拖完那一下松手别再当成点击（小圆点会被误展开）
+            justDraggedRef.current = true
+            setTimeout(() => { justDraggedRef.current = false }, 0)
+            setPos((current) => { writeMiniPos(current); return current })
+          }
+        },
+        onDoubleClick: () => { setPos(null); writeMiniPos(null) },
+      }
+      const posStyle = pos ? { left: pos.x + 'px', top: pos.y + 'px', right: 'auto', bottom: 'auto' } : null
+
+      // 窗口变小 / 展开收起导致尺寸变化时，把落点收回视口内
+      React.useEffect(() => {
+        setPos((current) => {
+          if (!current) return current
+          const el = rootRef.current
+          if (!el) return current
+          const rect = el.getBoundingClientRect()
+          return clampMiniPos(current, rect.width, rect.height)
+        })
+      }, [hidden, open])
+
+      React.useEffect(() => {
+        function onResize() {
+          setPos((current) => {
+            if (!current) return current
+            const el = rootRef.current
+            if (!el) return current
+            const rect = el.getBoundingClientRect()
+            return clampMiniPos(current, rect.width, rect.height)
+          })
+        }
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+      }, [])
+
       if (hidden) {
-        return h('button', {
+        return h('button', Object.assign({
+          ref: rootRef,
           className: 'sd-mini-fab',
-          title: '展开专注计时',
-          onClick: () => setHidden(false),
-        }, h(Icon, { name: 'clock', size: 16 }))
+          title: '展开专注计时（可拖动，双击回右下角）',
+          onClick: () => { if (!justDraggedRef.current) setHidden(false) },
+          style: posStyle,
+        }, dragHandlers), h(Icon, { name: 'clock', size: 16 }))
       }
       const remaining = timerRemaining(timer, now)
       const isFocus = !timer || timer.kind === 'focus'
-      return h('div', { className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle') }, [
+      return h('div', Object.assign({
+        ref: rootRef,
+        className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle'),
+        style: posStyle,
+      }, dragHandlers), [
         h('div', { className: 'sd-mini-main', key: 'm' }, [
+          h('span', { key: 'g', className: 'sd-mini-grip', title: '按住这里拖动（双击回右下角）' }),
           h('button', {
             key: 'play',
             className: 'sd-iconbtn sm',
@@ -1069,7 +1173,9 @@ window.__ModuleLoader__.load({
       '.sd-foot{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;word-break:break-all}',
       // 迷你条
       '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:40;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
-      '.sd-mini-main{display:flex;align-items:center;gap:8px;padding:8px 10px}',
+      '.sd-mini-main{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:grab;touch-action:none;user-select:none}',
+      '.sd-mini-main:active{cursor:grabbing}',
+      '.sd-mini-grip{flex:none;width:8px;height:14px;opacity:.4;background-image:radial-gradient(currentColor 1px,transparent 1.3px);background-size:4px 4px;background-position:1px 2px;background-repeat:repeat}',
       '.sd-mini-clock{font-variant-numeric:tabular-nums;font-size:15px;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}',
       '.sd-mini-clock.break{color:var(--dsw-alias-state-success-primary)}',
       '.sd-mini-task{font-size:11px;color:var(--dsw-alias-label-tertiary);max-width:8em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
@@ -1077,7 +1183,7 @@ window.__ModuleLoader__.load({
       '.sd-mini-row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
       '.sd-mini-row .sd-mini-cap{flex:none}',
       '.sd-mini-actions{gap:6px}',
-      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:40;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
+      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:40;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
       // 设置
       '.sd-settings{display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--dsw-alias-label-primary)}',
