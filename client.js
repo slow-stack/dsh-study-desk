@@ -1392,6 +1392,9 @@ window.__ModuleLoader__.load({
               })
               throw error
             }
+            // 渲染成功也回传一次（同 where 只报第一次）：这样「面板没出来」
+            // 到底是没渲染、还是渲染了但看不见，从磁盘上就能分辨。
+            reportDiag({ kind: 'render-ok', where, message: 'factory 渲染成功' })
             return h(Boundary, { where }, node)
           }))
         } catch (error) {

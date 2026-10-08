@@ -9,4 +9,4 @@
 # 为什么热挂载必须用完整 URL，见 AGENTS.md 的「坑 1」。
 - insert:
     - id: dsh-study-desk
-      name: file:///D:/dsh-study-desk/index.js?v=3
+      name: file:///D:/dsh-study-desk/index.js?v=4
