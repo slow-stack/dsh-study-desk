@@ -1,7 +1,7 @@
 {
   "name": "dsh-study-desk",
-  "version": "0.1.0",
-  "description": "考研工作台：Notion 式待办墙（待办/进行中/已完成）+ 按复习时长点亮的学习热力图 + 跨面板存活的番茄钟，只消费主题 token，融入现有主题而不改主题。",
+  "version": "0.2.0",
+  "description": "考研工作台：Notion 式待办墙 + 间隔重复复习队列 + 按复习时长点亮的热力图与周报 + 每日复盘 + Markdown 导出读回 + 跨面板存活的番茄钟，只消费主题 token，融入现有主题而不改主题。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -32,6 +32,9 @@
     "kanban",
     "pomodoro",
     "heatmap",
+    "spaced-repetition",
+    "obsidian",
+    "markdown",
     "kaoyan"
   ],
   "license": "MIT",
@@ -46,6 +49,7 @@
     "cordis.patch.yml",
     "index.js",
     "desk.js",
+    "markdown.js",
     "timer.js",
     "test/",
     "README.md"
