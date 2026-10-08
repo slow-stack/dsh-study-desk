@@ -16,9 +16,9 @@ jobs:
       matrix:
         node: ['22.x', '24.x']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
 
@@ -40,7 +40,7 @@ jobs:
     name: 可移植性检查
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 见 AGENTS.md 的「坑 1」：patch 里写死某台机器的目录，别人装完直接起不来。
       # 只看真正的 name: 行 —— 文件里的注释本来就在讲这个 URL 形态。
