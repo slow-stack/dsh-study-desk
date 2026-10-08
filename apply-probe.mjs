@@ -4,6 +4,16 @@
  * 用法：node apply-probe.mjs   （cwd = 本目录，含 index.js/desk.js/timer.js/client.js）
  */
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// 探针绝不能写真实数据：把 DSH_HOME 指到一个临时目录再导入宿主半边。
+// desk.js 的 dshHome() 是每次调用才读环境变量的，所以在这里设就够了。
+const PROBE_HOME = mkdtempSync(join(tmpdir(), 'desk-probe-'))
+process.env.DSH_HOME = PROBE_HOME
+const cleanup = () => { try { rmSync(PROBE_HOME, { recursive: true, force: true }) } catch (e) { /* 删不掉就算了 */ } }
+process.on('exit', cleanup)
 
 const fails = []
 function check(label, fn) {
@@ -191,6 +201,16 @@ check('未知 op 带 error 文案', () => assert.ok(String(JSON.parse(p5.body).e
 const p6 = await post({ op: 'task.add' })
 check('缺 title 返回 400', () => assert.equal(p6.code, 400))
 
+// 客户端诊断通道：不碰 desk.json，只追加 diag 文件
+const d1 = await post({ op: 'diag.report', kind: 'boot', where: 'probe', message: '来自探针' })
+check('POST diag.report 200', () => assert.equal(d1.code, 200))
+check('diag.report 不回 desk 快照', () => assert.equal(JSON.parse(d1.body).ok, true))
+check('diag.report 落了盘', () => {
+  const file = join(PROBE_HOME, 'study-desk', 'client-diag.json')
+  const report = JSON.parse(readFileSync(file, 'utf8'))
+  assert.ok(report.entries.some((e) => e.message === '来自探针'))
+})
+
 // ---------------------------------------------------------------- client 半边
 console.log('[client] client.js')
 
@@ -199,6 +219,18 @@ let modDef = null
 const React = {
   createElement: (...args) => ({ __el: args[0], props: args[1] || {}, children: args.slice(2) }),
   Fragment: 'fragment',
+  // client.js 里有个 class Boundary extends React.Component，桩里必须有这个基类，
+  // 否则 factory 一执行就在 class 定义处抛「Class extends value undefined」。
+  Component: class Component {
+    constructor(props) { this.props = props || {}; this.state = {} }
+    setState() {}
+  },
+  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useEffect: () => {},
+  useRef: (initial) => ({ current: initial }),
+  useCallback: (fn) => fn,
+  useMemo: (fn) => fn(),
+  useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
 }
 
 globalThis.window = {
@@ -298,6 +330,26 @@ check('shell.overlay 有 id', () => {
 check('每个槽位的 factory 都是函数', () => {
   for (const s of clientRegistered.slots) {
     if (s.slotName !== 'inject') assert.equal(typeof s.factory, 'function', `${s.slotName}.factory`)
+  }
+})
+// 每个槽位的渲染都要被 error boundary 包住，否则一处炸了就是白屏
+check('每个槽位的 factory 都用 Boundary 包了一层', () => {
+  for (const s of clientRegistered.slots) {
+    const node = s.factory({ size: 18 })
+    assert.ok(node && node.__el, `${s.slotName} 没返回元素`)
+    assert.equal(node.__el.name, 'Boundary', `${s.slotName} 没被 Boundary 包住，实际是 ${node.__el && node.__el.name}`)
+  }
+})
+check('Boundary 的 where 标签与槽位对得上', () => {
+  const expects = {
+    'sidebar.panellist': 'sidebar.panellist',
+    main: 'main',
+    'shell.overlay': 'shell.overlay',
+    'settings.section': 'settings.section',
+  }
+  for (const s of clientRegistered.slots) {
+    const node = s.factory({ size: 18 })
+    assert.equal(node.props.where, expects[s.slotName])
   }
 })
 check('注入了一份 style', () => assert.ok(clientRegistered.effects.length > 0))

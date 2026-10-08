@@ -176,6 +176,72 @@ window.__ModuleLoader__.load({
       },
     }
 
+    // -----------------------------------------------------------------------
+    // 诊断回传：浏览器里没有能读的控制台，就把异常发回宿主写进磁盘
+    // 宿主 /api/dsh-study-desk 的 diag.report 会追加到 <DSH_HOME>/study-desk/client-diag.json
+    // -----------------------------------------------------------------------
+
+    const diagSeen = new Set()
+    let diagSeq = 0
+
+    function reportDiag(entry) {
+      try {
+        const key = `${entry.kind || ''}|${entry.where || ''}|${entry.message || ''}`
+        if (diagSeen.has(key)) return
+        diagSeen.add(key)
+        diagSeq += 1
+        fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: 'diag.report', seq: diagSeq, at: Date.now(), ...entry }),
+        }).catch(() => { /* 诊断通道坏了不能影响主流程 */ })
+      } catch (error) { /* 同上 */ }
+    }
+
+    function getLayout() {
+      if (!clientCtx) return null
+      try {
+        if (typeof clientCtx.get === 'function') {
+          const viaGet = clientCtx.get('layout')
+          if (viaGet) return viaGet
+        }
+      } catch (error) { /* 退到属性访问 */ }
+      return clientCtx.layout || null
+    }
+
+    // 渲染炸了要看得见，不能只是白屏
+    class Boundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { error: null }
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error }
+      }
+
+      componentDidCatch(error, info) {
+        reportDiag({
+          kind: 'render-error',
+          where: this.props.where || '未知',
+          message: String((error && error.message) || error),
+          stack: String((error && error.stack) || '').split('\n').slice(0, 12).join('\n'),
+          componentStack: String((info && info.componentStack) || '').split('\n').slice(0, 12).join('\n'),
+        })
+      }
+
+      render() {
+        if (this.state.error) {
+          return h('div', { className: 'sd-error' }, [
+            h('div', { key: 't' }, `工作台渲染出错（${this.props.where || '未知位置'}）——细节已写进 client-diag.json`),
+            h('pre', { key: 's', className: 'sd-error-stack' },
+              String((this.state.error && this.state.error.stack) || this.state.error)),
+          ])
+        }
+        return this.props.children
+      }
+    }
+
     function tasksIn(status) {
       return store.state.tasks
         .filter((t) => t.status === status)
@@ -241,11 +307,12 @@ window.__ModuleLoader__.load({
     }
 
     function useTick(ms) {
-      const [, force] = React.useState(0)
+      const [now, force] = React.useState(() => Date.now())
       React.useEffect(() => {
-        const id = setInterval(() => force((n) => n + 1), ms)
+        const id = setInterval(() => force(Date.now()), ms)
         return () => clearInterval(id)
       }, [ms])
+      return now
     }
 
     function useStore() {
@@ -775,9 +842,9 @@ window.__ModuleLoader__.load({
     // 整页面板
     // -----------------------------------------------------------------------
 
-    function Panel({ now }) {
+    function Panel() {
       const s = useStore()
-      useTick(500)
+      const now = useTick(500)
       usePoll(20000)
       return h('div', { className: 'sd-page' }, [
         h(Head, { key: 'head', now }),
@@ -829,13 +896,30 @@ window.__ModuleLoader__.load({
       return { x: Math.min(Math.max(pad, p.x), maxX), y: Math.min(Math.max(pad, p.y), maxY) }
     }
 
-    function MiniBar({ now }) {
+    // 松手吸附：横向永远贴最近的一边，纵向离上下边太近就吸到边
+    function snapMiniPos(p, w, h) {
+      const pad = 12
+      const edge = 48
+      const vw = window.innerWidth || 0
+      const vh = window.innerHeight || 0
+      const width = w || 0
+      const height = h || 0
+      const x = (p.x + width / 2) < vw / 2 ? pad : Math.max(pad, vw - width - pad)
+      const maxY = Math.max(pad, vh - height - pad)
+      let y = Math.min(Math.max(pad, p.y), maxY)
+      if (Math.abs(y - pad) <= edge) y = pad
+      else if (Math.abs(maxY - y) <= edge) y = maxY
+      return { x, y }
+    }
+
+    function MiniBar() {
       const s = useStore()
-      useTick(500)
+      const now = useTick(500)
       usePoll(30000)
       const [open, setOpen] = React.useState(false)
       const [hidden, setHidden] = React.useState(false)
       const [pos, setPos] = React.useState(readMiniPos)
+      const [snapping, setSnapping] = React.useState(false)
       const dragRef = React.useRef(null)
       const rootRef = React.useRef(null)
       const justDraggedRef = React.useRef(false)
@@ -872,7 +956,14 @@ window.__ModuleLoader__.load({
             // 拖完那一下松手别再当成点击（小圆点会被误展开）
             justDraggedRef.current = true
             setTimeout(() => { justDraggedRef.current = false }, 0)
-            setPos((current) => { writeMiniPos(current); return current })
+            // 松手吸附：横向贴最近的一边，纵向离上下边近就吸上去
+            setSnapping(true)
+            setPos((current) => {
+              const next = snapMiniPos(current || readMiniPos() || { x: 18, y: 18 }, d.w, d.h)
+              writeMiniPos(next)
+              return next
+            })
+            setTimeout(() => setSnapping(false), 280)
           }
         },
         onDoubleClick: () => { setPos(null); writeMiniPos(null) },
@@ -907,7 +998,7 @@ window.__ModuleLoader__.load({
       if (hidden) {
         return h('button', Object.assign({
           ref: rootRef,
-          className: 'sd-mini-fab',
+          className: 'sd-mini-fab' + (snapping ? ' snapping' : ''),
           title: '展开专注计时（可拖动，双击回右下角）',
           onClick: () => { if (!justDraggedRef.current) setHidden(false) },
           style: posStyle,
@@ -917,7 +1008,7 @@ window.__ModuleLoader__.load({
       const isFocus = !timer || timer.kind === 'focus'
       return h('div', Object.assign({
         ref: rootRef,
-        className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle'),
+        className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle') + (snapping ? ' snapping' : ''),
         style: posStyle,
       }, dragHandlers), [
         h('div', { className: 'sd-mini-main', key: 'm' }, [
@@ -962,11 +1053,30 @@ window.__ModuleLoader__.load({
             h('button', {
               key: 'open', className: 'sd-textbtn primary',
               onClick: () => {
+                const layout = getLayout()
+                if (!layout || typeof layout.selectPanel !== 'function') {
+                  reportDiag({
+                    kind: 'open-panel-failed',
+                    where: 'mini.打开工作台',
+                    message: '拿不到 layout 服务',
+                    detail: {
+                      hasCtx: Boolean(clientCtx),
+                      hasGet: Boolean(clientCtx && typeof clientCtx.get === 'function'),
+                      hasProp: Boolean(clientCtx && clientCtx.layout),
+                    },
+                  })
+                  return
+                }
                 try {
-                  if (clientCtx && clientCtx.layout && typeof clientCtx.layout.selectPanel === 'function') {
-                    clientCtx.layout.selectPanel(PANEL_ID)
-                  }
-                } catch (error) { console.warn('[dsh-study-desk] 打开面板失败:', error) }
+                  layout.selectPanel(PANEL_ID)
+                } catch (error) {
+                  reportDiag({
+                    kind: 'open-panel-failed',
+                    where: 'mini.打开工作台',
+                    message: 'selectPanel 抛错：' + String((error && error.message) || error),
+                    stack: String((error && error.stack) || '').split('\n').slice(0, 12).join('\n'),
+                  })
+                }
               },
             }, '打开工作台'),
             h('button', { key: 'hide', className: 'sd-textbtn', onClick: () => { setOpen(false); setHidden(true) } }, '收起成小圆点'),
@@ -1185,6 +1295,10 @@ window.__ModuleLoader__.load({
       '.sd-mini-actions{gap:6px}',
       '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:40;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
+      // 松手吸附时给 left/top 加一段过渡，视觉上「啪」地贴边
+      '.sd-mini.snapping,.sd-mini-fab.snapping{transition:left .22s cubic-bezier(.2,.8,.2,1),top .22s cubic-bezier(.2,.8,.2,1)}',
+      '.sd-error{margin:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6}',
+      '.sd-error-stack{margin:10px 0 0;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-radius:6px}',
       // 设置
       '.sd-settings{display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--dsw-alias-label-primary)}',
       '.sd-settings-note{margin:0;font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.65}',
@@ -1208,6 +1322,41 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       clientCtx = ctx
 
+      // 浏览器里没有能读的控制台，先把环境摸清楚回传一份，再把 window 上的
+      // 全局异常也接住。这些都不影响主流程，失败就算了。
+      reportDiag({
+        kind: 'boot',
+        where: 'client',
+        message: 'client half applied',
+        detail: {
+          href: String(window.location && window.location.href),
+          ua: String(navigator.userAgent || ''),
+          innerWidth: window.innerWidth,
+          innerHeight: window.innerHeight,
+          hasSlots: Boolean(ctx.get && ctx.get('slots')),
+          hasLayout: Boolean(getLayout()),
+          reactVersion: String((React && React.version) || '未知'),
+        },
+      })
+      window.addEventListener('error', (event) => {
+        reportDiag({
+          kind: 'window-error',
+          where: 'window',
+          message: String((event && event.message) || event),
+          stack: String(((event && event.error && event.error.stack) || '')).split('\n').slice(0, 12).join('\n'),
+          detail: { file: String((event && event.filename) || ''), line: (event && event.lineno) || 0, col: (event && event.colno) || 0 },
+        })
+      })
+      window.addEventListener('unhandledrejection', (event) => {
+        const reason = event && event.reason
+        reportDiag({
+          kind: 'unhandled-rejection',
+          where: 'window',
+          message: String((reason && reason.message) || reason),
+          stack: String((reason && reason.stack) || '').split('\n').slice(0, 12).join('\n'),
+        })
+      })
+
       const styleEl = document.createElement('style')
       styleEl.textContent = CSS
       document.head.appendChild(styleEl)
@@ -1221,33 +1370,65 @@ window.__ModuleLoader__.load({
 
       const slots = ctx.get('slots')
       if (slots === undefined) {
+        reportDiag({ kind: 'no-slots', where: 'client', message: '拿不到 slots 服务，界面不注册' })
         console.warn('[dsh-study-desk] 拿不到 slots 服务，界面不注册')
         return
       }
 
+      // 每个槽位都用自己的 error boundary 包一层：某一处渲染炸了不该白屏，
+      // 而且要把栈回传到磁盘，否则在浏览器里根本看不见。
+      const register = (slot, meta, render, where) => {
+        try {
+          slots.inject(slot, () => slots.register(meta, (...args) => {
+            let node
+            try {
+              node = render(...args)
+            } catch (error) {
+              reportDiag({
+                kind: 'render-throw',
+                where,
+                message: 'factory 抛错：' + String((error && error.message) || error),
+                stack: String((error && error.stack) || '').split('\n').slice(0, 12).join('\n'),
+              })
+              throw error
+            }
+            return h(Boundary, { where }, node)
+          }))
+        } catch (error) {
+          reportDiag({
+            kind: 'register-failed',
+            where,
+            message: '注册槽位失败：' + String((error && error.message) || error),
+            stack: String((error && error.stack) || '').split('\n').slice(0, 12).join('\n'),
+          })
+        }
+      }
+
       // 左侧栏图标：id 与 main 的 key 同名，侧栏点它就会 dispatch 到 main 的同一格
-      slots.inject('sidebar.panellist', () => slots.register(
+      register('sidebar.panellist',
         { name: 'sidebar.panellist', id: PANEL_ID, order: 40, label: '考研工作台' },
         (props) => h(Icon, { name: 'board', size: (props && props.size) || 18 }),
-      ))
+        'sidebar.panellist')
 
       // 整页工作台
-      slots.inject('main', () => slots.register(
+      register('main',
         { name: 'main', key: PANEL_ID },
-        () => h(Panel, { now: Date.now() }),
-      ))
+        () => h(Panel, { key: 'panel' }),
+        'main')
 
       // 右下角常驻迷你计时条（跨面板存活）
-      slots.inject('shell.overlay', () => slots.register(
+      register('shell.overlay',
         { name: 'shell.overlay', id: 'study-desk-mini', order: 80, label: '专注计时' },
-        () => h(MiniBar, { now: Date.now() }),
-      ))
+        () => h(MiniBar, { key: 'mini' }),
+        'shell.overlay')
 
       // 设置页
-      slots.inject('settings.section', () => slots.register(
+      register('settings.section',
         { name: 'settings.section', id: 'study-desk', order: 27, label: '考研工作台' },
-        () => h(Settings),
-      ))
+        () => h(Settings, { key: 'settings' }),
+        'settings.section')
+
+      reportDiag({ kind: 'slots-registered', where: 'client', message: '四个槽位注册调用已完成' })
     }
 
     exports.apply = apply

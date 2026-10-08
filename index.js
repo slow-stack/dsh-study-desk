@@ -14,7 +14,7 @@
  * 数据落在 <DSH_HOME>/study-desk/desk.json，路径不写死在 patch 里（写死别人装完起不来）。
  */
 
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -23,6 +23,7 @@ import {
   STATUSES,
   addTask,
   daysUntil,
+  deskDir,
   deskFile,
   heatmap,
   logSession,
@@ -251,6 +252,31 @@ const MUTATIONS = {
   'timer.complete': (state) => completeTimer(state),
 }
 
+// ---------------------------------------------------------------------------
+// 客户端诊断回传：浏览器里没有可读的控制台，就把渲染/环境异常写到磁盘上
+// 落在 <DSH_HOME>/study-desk/client-diag.json，只保留最近 200 条
+// ---------------------------------------------------------------------------
+
+function diagFile() {
+  return join(deskDir(), 'client-diag.json')
+}
+
+function writeDiag(payload) {
+  const file = diagFile()
+  let report = { updatedAt: 0, entries: [] }
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (parsed && Array.isArray(parsed.entries)) report = parsed
+  } catch (error) { /* 文件不存在或坏了就重开一份 */ }
+  const { op, ...entry } = payload
+  report.entries.push({ ...entry, recordedAt: Date.now() })
+  if (report.entries.length > 200) report.entries = report.entries.slice(-200)
+  report.updatedAt = Date.now()
+  mkdirSync(deskDir(), { recursive: true })
+  writeFileSync(file, JSON.stringify(report, null, 2))
+  return report
+}
+
 async function handleApi(req, res) {
   try {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -266,6 +292,12 @@ async function handleApi(req, res) {
     if (op === 'state') {
       const { state } = await withDesk(null)
       sendJson(res, 200, snapshot(state))
+      return
+    }
+    if (op === 'diag.report') {
+      // 客户端诊断：不碰 desk.json，只追加到 client-diag.json
+      const report = writeDiag(payload)
+      sendJson(res, 200, { ok: true, at: Date.now(), entries: report.entries.length })
       return
     }
     const mutate = MUTATIONS[op]
