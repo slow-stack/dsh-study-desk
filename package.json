@@ -1,7 +1,7 @@
 {
   "name": "dsh-study-desk",
   "version": "0.2.0",
-  "description": "考研工作台：Notion 式待办墙 + 间隔重复复习队列 + 按复习时长点亮的热力图与周报 + 每日复盘 + Markdown 导出读回 + 跨面板存活的番茄钟，只消费主题 token，融入现有主题而不改主题。",
+  "description": "学习工作台 DSH 插件：Notion 式待办墙与标签过滤 + 间隔重复复习队列（简化 SM-2）+ 按实际复习时长点亮的热力图与周报 + 每日复盘 + Markdown 导出读回 + 跨面板存活的番茄钟。只消费主题 token，融入现有主题而不改主题。",
   "type": "module",
   "main": "index.js",
   "exports": {
