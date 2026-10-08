@@ -57,11 +57,11 @@ check('apply() 不抛', () => host.apply(ctx, {}))
 check('注册了 1 个工具', () => assert.equal(registered.tools.length, 1))
 const tool = registered.tools[0]
 check('工具名 study_desk', () => assert.equal(tool.name, 'study_desk'))
-check('工具参数含 7 个 action', () => {
+check('工具参数含 10 个 action', () => {
   // defineTool 会把友好描述编译成 JSON Schema（{type:'object',properties:{...}}），
   // 这里两种形态都认，免得又踩一次「编译层被绕过」的坑。
   const props = tool.parameters.properties || tool.parameters
-  assert.deepEqual(props.action.enum, ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus'])
+  assert.deepEqual(props.action.enum, ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus', 'review', 'journal', 'report'])
 })
 check('output.schema 是 register 认的 JSON Schema（不能是未编译的 {type:"json"}）', () => {
   const t = tool.output.schema && tool.output.schema.type
@@ -121,12 +121,29 @@ const stopped = await run('focus', { off: true })
 check('focus off 停掉', () => assert.equal(stopped.ok, true))
 
 const stats = await run('stats', { minutes: 7 })
-check('stats 返回 message', () => assert.ok(String(stats.message || '').length > 0))
+check('stats 返回 message', () => assert.ok(String(stats.message).length > 0))
+
+const tagged = await run('add', { title: '复习队列冒烟卡', subject: '政治', tags: '名词解释, 错题', review: true })
+check('add 支持标签与直接进复习循环', () => assert.equal(tagged.ok, true))
+const reviewOn = await run('review')
+check('review 不带参数会播报今日队列', () => assert.match(reviewOn.message, /复习：排期 \d+ 张/))
+const graded = await run('review', { title: '复习队列冒烟卡', grade: 'good' })
+check('review 打分后推进排期', () => assert.match(graded.message, /下次 \d{4}-\d{2}-\d{2}/))
+const journaled = await run('journal', { text: '政治选择题错 8 个' })
+check('journal 能写入', () => assert.match(journaled.message, /已记下/))
+const journalBack = await run('journal')
+check('journal 不带参数能读回', () => assert.match(journalBack.message, /错 8 个/))
+const reported = await run('report', { weeks: 2 })
+check('report 出周报', () => assert.match(reported.message, /最近 2 周/))
+const boardAgain = await run('board')
+check('board 摘要里带今日复盘', () => assert.match(boardAgain.message, /今天的复盘/))
 
 const removed = await run('remove', { title: '第二张' })
 check('remove 成功', () => assert.equal(removed.ok, true))
 const removed2 = await run('remove', { title: '冒烟测试卡片' })
 check('remove 第二张', () => assert.equal(removed2.ok, true))
+const removed3 = await run('remove', { title: '复习队列冒烟卡' })
+check('remove 复习冒烟卡', () => assert.equal(removed3.ok, true))
 
 const unknown = await run('board')
 check('清空后看板仍可用', () => assert.ok(String(unknown.message).length > 0))
@@ -201,6 +218,39 @@ check('未知 op 带 error 文案', () => assert.ok(String(JSON.parse(p5.body).e
 const p6 = await post({ op: 'task.add' })
 check('缺 title 返回 400', () => assert.equal(p6.code, 400))
 
+// ---- 复习 / 复盘 / Markdown
+const p7 = await post({ op: 'review.grade', title: 'POST 加的卡', grade: 'easy' })
+check('POST review.grade 200', () => assert.equal(p7.code, 200))
+check('review.grade 推进了排期', () => {
+  const t = JSON.parse(p7.body).state.tasks.find((x) => x.title === 'POST 加的卡')
+  assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(t.review.due), 'review.due 没排上')
+  assert.equal(t.review.reps, 1)
+})
+check('快照带派生字段（review/due/tags/weekly/journal/markdownFile）', () => {
+  const j = JSON.parse(p7.body)
+  assert.equal(typeof j.review.due, 'number')
+  assert.ok(Array.isArray(j.due))
+  assert.ok(Array.isArray(j.tags))
+  assert.equal(j.weekly.weeks.length, 8)
+  assert.ok(Array.isArray(j.journal))
+  assert.ok(String(j.markdownFile).endsWith('desk.md'))
+})
+const p8 = await post({ op: 'journal.set', text: '来自探针的复盘' })
+check('POST journal.set 200', () => assert.equal(JSON.parse(p8.body).result.text, '来自探针的复盘'))
+const p9 = await post({ op: 'markdown.export' })
+check('POST markdown.export 返回正文', () => assert.match(JSON.parse(p9.body).result.markdown, /# 考研工作台/))
+check('markdown.export 落了盘', () => {
+  const md = readFileSync(join(PROBE_HOME, 'study-desk', 'desk.md'), 'utf8')
+  assert.ok(md.includes('POST 加的卡'))
+})
+const p10 = await post({ op: 'markdown.import', markdown: '## 政治\n\n### 待办\n\n- [ ] 从 md 读回的卡\n\t- 手写的笔记\n' })
+check('POST markdown.import 增卡并带笔记', () => {
+  const body = JSON.parse(p10.body)
+  assert.equal(body.result.added, 1)
+  const t = body.state.tasks.find((x) => x.title === '从 md 读回的卡')
+  assert.equal(t.note, '手写的笔记')
+})
+
 // 客户端诊断通道：不碰 desk.json，只追加 diag 文件
 const d1 = await post({ op: 'diag.report', kind: 'boot', where: 'probe', message: '来自探针' })
 check('POST diag.report 200', () => assert.equal(d1.code, 200))
@@ -258,8 +308,10 @@ globalThis.fetch = async () => ({
       version: 1,
       tasks: [],
       sessions: [],
+      reviews: [],
+      journal: {},
       timer: null,
-      settings: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, roundsBeforeLong: 4, dailyGoalMin: 180, streakMin: 10, injectPrompt: true, subjects: [], heatmapWeeks: 26 },
+      settings: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, roundsBeforeLong: 4, dailyGoalMin: 180, streakMin: 10, injectPrompt: true, subjects: [], heatmapWeeks: 26, reviewQueueSize: 10 },
       createdAt: 0,
       updatedAt: 0,
     },
@@ -267,6 +319,12 @@ globalThis.fetch = async () => ({
     todayMinutes: 0,
     streak: 0,
     focusRoundsToday: 0,
+    review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
+    due: [],
+    tags: [],
+    weekly: { weeks: [], goalWeekly: 1260 },
+    journal: [],
+    markdownFile: 'desk.md',
     exam: { name: 'x', start: '2026-12-19', end: '2026-12-20', note: '' },
     milestones: [],
     deskFile: 'x',
