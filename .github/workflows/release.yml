@@ -1,0 +1,53 @@
+name: Release to npm
+
+# 手动触发，不跟 tag 推送自动联动：npm 上发出去的版本删不掉，
+# 宁可多点一次按钮，也不要一个错手打歪的 tag 把包发出去。
+# 用法：Actions → Release to npm → Run workflow → 选中要发的 tag（例如 v0.2.0）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # npm provenance / trusted publishing 要这个
+
+jobs:
+  publish:
+    name: 发布
+    runs-on: ubuntu-latest
+    steps:
+      # 不接任何输入做 ref：GitHub 在「Run workflow」里选好哪个 ref，这里就检出哪个
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 发之前先过一遍测试与冒烟
+        run: |
+          node --test
+          node apply-probe.mjs
+
+      - name: 确认版本号和 tag 对得上
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "package.json = v$VERSION"
+          if [ "${GITHUB_REF_NAME#refs/tags/}" != "v$VERSION" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::warning::当前 ref 是 $GITHUB_REF_NAME，和 package.json 的 $VERSION 不一致"
+          fi
+
+      - name: 要发的文件清单
+        run: npm pack --dry-run
+
+      # 免 token 发布：先在 npmjs.com 把本仓库配成 trusted publisher。
+      # 想用 token：把上面那行换成 npm publish，再配 NPM_TOKEN secret，
+      # 并在仓库里放一个 .npmrc 写 registry=https://registry.npmjs.org/ 与
+      # //registry.npmjs.org/:_authToken 指向那个 secret（记得把 secret 加进 env）。
+      - name: npm publish（带 provenance）
+        run: npm publish --provenance --access public --no-git-checks
+
+      - name: 验证真的发上去了
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          npm view "$NAME@$VERSION" version dist.tarball

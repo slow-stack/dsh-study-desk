@@ -104,6 +104,24 @@ node apply-probe.mjs    # 离线冒烟：用 stub ctx 把两侧的 apply() 真�
 这是本地安装的取舍：重启 DSH 后可以把 name 换回裸包名 `dsh-study-desk`（启动期组装的 entry 有正确的解析基准）。
 要发给别人用之前，必须换回裸包名——patch 里写死某台机器的目录，别人装完直接起不来。
 
+## 发布与版本
+
+版本号只在 `package.json`。发一版三步：
+
+```bash
+node --test && node apply-probe.mjs        # 20 个单测 + 离线冒烟
+git tag v0.2.0 && git push origin master v0.2.0
+gh release create v0.2.0 --generate-notes
+```
+
+- **CI**（`.github/workflows/ci.yml`）：每次 push / PR 跑单测与冒烟（Node 22、24 两个版本），
+  外加一条可移植性检查 —— `cordis.patch.yml` 必须是裸包名，代码与文档里不许出现本机用户目录。
+  这条是踩过坑加的：patch 里写死某台机器的目录，别人装完直接起不来。
+- **npm 发布**（`.github/workflows/release.yml`）：**手动触发**，不跟 tag 自动联动
+  （发出去的版本删不掉，宁可多点一次按钮）。第一次用之前要在 npmjs.com 上把本仓库配成
+  trusted publisher，之后 Actions 免 token 带 provenance 发布。
+- 更新记录见 `CHANGELOG.md`。
+
 ## License
 
 MIT
