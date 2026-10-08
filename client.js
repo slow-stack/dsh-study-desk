@@ -61,6 +61,9 @@ window.__ModuleLoader__.load({
       { id: 'done', label: '已完成', latin: 'DONE' },
     ]
 
+    const GRADES = ['again', 'good', 'easy']
+    const GRADE_LABEL = { again: '忘了', good: '记得', easy: '很简单' }
+
     const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
     function startOfDay(ts) {
@@ -116,6 +119,17 @@ window.__ModuleLoader__.load({
       return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     }
 
+    /** 复习排期的人话说法：逾期 N 天 / 今天到期 / 明天 / N 天后。 */
+    function dueLabel(due, now) {
+      if (!due) return ''
+      const d = daysUntil(due, now === undefined ? Date.now() : now)
+      if (d === null) return due
+      if (d < 0) return `逾期 ${-d} 天`
+      if (d === 0) return '今天到期'
+      if (d === 1) return '明天'
+      return `${d} 天后`
+    }
+
     // -----------------------------------------------------------------------
     // 全局 store：宿主是唯一真相源，这里只缓存最近一次快照
     // -----------------------------------------------------------------------
@@ -123,11 +137,18 @@ window.__ModuleLoader__.load({
     const store = {
       ready: false,
       error: null,
-      state: { tasks: [], sessions: [], timer: null, settings: {} },
+      state: { tasks: [], sessions: [], reviews: [], journal: {}, timer: null, settings: {} },
       minutes: {},
       todayMinutes: 0,
       streak: 0,
       focusRoundsToday: 0,
+      // 派生数据由宿主算好（desk.js 是唯一的算法出处，浏览器里不再实现一遍）
+      review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
+      due: [],
+      tags: [],
+      weekly: { weeks: [], goalWeekly: 0 },
+      journalLog: [],
+      markdownFile: '',
       exam: EXAM,
       milestones: MILESTONES,
       deskFile: '',
@@ -154,6 +175,12 @@ window.__ModuleLoader__.load({
         this.todayMinutes = json.todayMinutes || 0
         this.streak = json.streak || 0
         this.focusRoundsToday = json.focusRoundsToday || 0
+        this.review = json.review || this.review
+        this.due = json.due || []
+        this.tags = json.tags || []
+        this.weekly = json.weekly || this.weekly
+        this.journalLog = json.journal || []
+        this.markdownFile = json.markdownFile || ''
         this.exam = json.exam || EXAM
         this.milestones = json.milestones || MILESTONES
         this.deskFile = json.deskFile || ''
@@ -375,6 +402,12 @@ window.__ModuleLoader__.load({
         flame: ['M10 2.5c3 3.2 4.5 5.6 4.5 8a4.5 4.5 0 0 1-9 0c0-1.6.7-3 1.8-4.3', 'M10 16.5a2.4 2.4 0 0 1-1-4.5'],
         expand: ['M4 8V4h4', 'M16 12v4h-4', 'M4 12v4h4', 'M16 8V4h-4'],
         collapse: ['M8 4v4H4', 'M12 16v-4h4', 'M12 4v4h4', 'M8 16v-4H4'],
+        repeat: ['M4.5 9A5.5 5.5 0 0 1 15 6.4', 'M15.5 11A5.5 5.5 0 0 1 5 13.6', 'M15 3.2v3.4h-3.4', 'M5 16.8v-3.4h3.4'],
+        pen: ['M13.4 4.2l2.4 2.4L7.6 14.8l-3.2.8.8-3.2z'],
+        down: ['M10 3.5v9', 'M6.2 8.8 10 12.6l3.8-3.8', 'M4 16.5h12'],
+        up: ['M10 12.5v-9', 'M6.2 7.2 10 3.4l3.8 3.8', 'M4 16.5h12'],
+        tag: ['M10.6 3.5H16v5.4l-8 8-5.4-5.4z', 'M13.1 6.4h.01'],
+        search: ['M8.8 3.4a5.4 5.4 0 1 0 0 10.8 5.4 5.4 0 0 0 0-10.8z', 'M12.8 12.8l3.7 3.7'],
       }
       const p = paths[name] || paths.board
       return h('svg', common, p.map((d, i) => h('path', { key: i, d })))
@@ -448,7 +481,58 @@ window.__ModuleLoader__.load({
             h('span', { className: 'sd-today-num', key: 'n' }, String(s.streak)),
             h('span', { className: 'sd-today-goal', key: 'g' }, '天'),
           ]),
+          h(MarkdownRow, { key: 'md' }),
         ]),
+      ])
+    }
+
+    /**
+     * Markdown 导出 / 读回：desk.md 落在数据旁边，软链进 Obsidian vault 就能当笔记改，
+     * 改完再读回来。读回是「合并」不是「覆盖」，md 里没有的卡不动。
+     */
+    function MarkdownRow() {
+      const s = useStore()
+      const [busy, setBusy] = React.useState('')
+      const [note, setNote] = React.useState('')
+      const fileRef = React.useRef(null)
+
+      const run = async (kind, task, done) => {
+        setBusy(kind)
+        setNote('')
+        try {
+          const res = await task()
+          setNote(done(res) || '没成功，细节在宿主日志里')
+        } catch (error) {
+          setNote(String((error && error.message) || error))
+        } finally {
+          setBusy('')
+        }
+      }
+
+      return h('div', { className: 'sd-mdrow' }, [
+        h('button', {
+          key: 'e', className: 'sd-textbtn', disabled: busy !== '',
+          title: s.markdownFile ? `写到 ${s.markdownFile}` : '把看板导成一份 Markdown',
+          onClick: () => run('export', () => store.apply('markdown.export', {}),
+            (res) => (res && res.result ? `已导出：${res.result.file}` : '')),
+        }, busy === 'export' ? '导出中…' : [h(Icon, { name: 'down', size: 13, key: 'i' }), h('span', { key: 't' }, ' 导出 Markdown')]),
+        h('button', {
+          key: 'i', className: 'sd-textbtn', disabled: busy !== '',
+          title: '选一份 desk.md，按标题与 id 合并回看板',
+          onClick: () => fileRef.current && fileRef.current.click(),
+        }, busy === 'import' ? '读回中…' : [h(Icon, { name: 'up', size: 13, key: 'i' }), h('span', { key: 't' }, ' 从 Markdown 读回')]),
+        h('input', {
+          key: 'f', ref: fileRef, type: 'file', accept: '.md,.markdown,text/markdown,text/plain',
+          className: 'sd-hidden-file',
+          onChange: (e) => {
+            const file = e.target.files && e.target.files[0]
+            e.target.value = ''
+            if (!file) return
+            run('import', async () => store.apply('markdown.import', { markdown: await file.text() }),
+              (res) => (res && res.result ? `读回：新增 ${res.result.added} 张、更新 ${res.result.updated} 张` : ''))
+          },
+        }),
+        note ? h('span', { className: 'sd-mdnote', key: 'n', title: note }, note) : null,
       ])
     }
 
@@ -647,11 +731,15 @@ window.__ModuleLoader__.load({
 
     let dragId = null
 
-    function Card({ task, minutes, confirmId, setConfirmId, onMove, onDelete, dragging, setDragging }) {
+    function Card({ task, minutes, confirmId, setConfirmId, onMove, onDelete, dragging, setDragging, onToggleReview, onPickTag, activeTags }) {
       const spent = minutes[task.id] || 0
       const confirming = confirmId === task.id
+      const review = task.review || {}
+      const scheduled = !!review.due
+      const late = scheduled && daysUntil(review.due, Date.now()) <= 0
+      const tags = task.tags || []
       return h('article', {
-        className: 'sd-card' + (task.status === 'done' ? ' done' : '') + (dragging ? ' dragging' : ''),
+        className: 'sd-card' + (task.status === 'done' ? ' done' : '') + (dragging ? ' dragging' : '') + (late ? ' due' : ''),
         draggable: true,
         onDragStart: (e) => {
           dragId = task.id
@@ -667,10 +755,24 @@ window.__ModuleLoader__.load({
           h('div', { className: 'sd-card-title', key: 't' }, task.title),
         ]),
         task.note ? h('div', { className: 'sd-card-note', key: 'note' }, task.note) : null,
+        tags.length
+          ? h('div', { className: 'sd-card-tags', key: 'tags' }, tags.map((tag) => h('button', {
+            key: tag,
+            className: 'sd-tagchip' + ((activeTags || []).includes(tag) ? ' on' : ''),
+            title: (activeTags || []).includes(tag) ? '取消这个标签' : '按这个标签过滤',
+            onClick: () => onPickTag && onPickTag(tag),
+          }, tag)))
+          : null,
         h('div', { className: 'sd-card-foot', key: 'foot' }, [
           task.subject ? h('span', { className: 'sd-tag', key: 's' }, task.subject) : null,
           spent ? h('span', { className: 'sd-spent', key: 'm', title: '累计投入' }, fmtShort(spent)) : null,
           task.estimateMin && !spent ? h('span', { className: 'sd-est', key: 'e', title: '预计' }, '~' + fmtShort(task.estimateMin)) : null,
+          scheduled
+            ? h('span', {
+              className: 'sd-due' + (late ? ' late' : ''), key: 'd',
+              title: `下次 ${review.due} · 间隔 ${review.intervalDays} 天 · 难度 ${review.ease} · 已过 ${review.reps} 遍 · 忘了 ${review.lapses} 次`,
+            }, `${dueLabel(review.due)} · 第 ${review.reps + 1} 遍`)
+            : null,
           h('span', { className: 'sd-card-acts', key: 'a' }, confirming
             ? [
               h('button', { key: 'yes', className: 'sd-act danger', title: '确认删除', onClick: () => { setConfirmId(null); onDelete(task.id) } }, '删除'),
@@ -690,6 +792,10 @@ window.__ModuleLoader__.load({
                 onClick: () => onMove(task.id, 'doing', null),
               }, h(Icon, { name: 'right', size: 13 })) : null,
               h('button', {
+                key: 'rev', className: 'sd-act', title: scheduled ? '移出复习循环' : '拉进间隔重复复习循环',
+                onClick: () => onToggleReview && onToggleReview(task.id, !scheduled),
+              }, scheduled ? `×${dueLabel(review.due).replace('到期', '')}` : h(Icon, { name: 'repeat', size: 13 })),
+              h('button', {
                 key: 'x', className: 'sd-act', title: '删除这张卡',
                 onClick: () => setConfirmId(task.id),
               }, h(Icon, { name: 'cross', size: 13 })),
@@ -707,9 +813,15 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { if (open && ref.current) ref.current.focus() }, [open])
 
       const commit = () => {
-        const title = text.trim()
-        if (!title) { setOpen(false); return }
-        onAdd({ title, subject, status })
+        const raw = text.trim()
+        if (!raw) { setOpen(false); return }
+        // Obsidian 肌肉记忆：正文里写 #标签 就直接落成标签
+        const tags = []
+        const title = raw.replace(/(?:^|\s)#([^\s#，,、]{1,24})/g, (m, tag) => { tags.push(tag); return '' })
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (!title) { onAdd({ title: tags.join(' · '), subject, status }); setText(''); return }
+        onAdd({ title, subject, status, tags })
         setText('')
         if (ref.current) ref.current.focus()
       }
@@ -748,7 +860,7 @@ window.__ModuleLoader__.load({
       ])
     }
 
-    function Column({ meta, tasks, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onAdd }) {
+    function Column({ meta, tasks, total, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onAdd, onToggleReview, onPickTag, activeTags, filtered }) {
       return h('section', {
         className: 'sd-col' + (hover === meta.id ? ' hover' : ''),
         onDragOver: (e) => { e.preventDefault(); setHover(meta.id) },
@@ -764,7 +876,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sd-col-head', key: 'h' }, [
           h('span', { className: 'sd-col-latin', key: 'l' }, meta.latin),
           h('span', { className: 'sd-col-label', key: 'n' }, meta.label),
-          h('span', { className: 'sd-col-count', key: 'c' }, String(tasks.length)),
+          h('span', { className: 'sd-col-count', key: 'c' }, filtered ? `${tasks.length}/${total}` : String(tasks.length)),
         ]),
         h('div', { className: 'sd-col-body', key: 'b' }, [
           ...tasks.map((t) => h(Card, {
@@ -779,8 +891,11 @@ window.__ModuleLoader__.load({
               if (isHover) return
               onMove(id, status, before)
             },
+            onToggleReview,
+            onPickTag,
+            activeTags,
           })),
-          tasks.length ? null : h('div', { className: 'sd-col-empty', key: 'e' }, meta.id === 'done' ? '还没有完成的卡' : '空的'),
+          tasks.length ? null : h('div', { className: 'sd-col-empty', key: 'e' }, filtered ? '这一列没有符合过滤条件的卡' : (meta.id === 'done' ? '还没有完成的卡' : '空的')),
           h(Composer, { key: 'composer', status: meta.id, subjects, onAdd }),
         ]),
       ])
@@ -791,34 +906,99 @@ window.__ModuleLoader__.load({
       const [hover, setHover] = React.useState(null)
       const [confirmId, setConfirmId] = React.useState(null)
       const [dragging, setDragging] = React.useState(null)
+      const [subject, setSubject] = React.useState('')
+      const [tags, setTags] = React.useState([])
+      const [dueOnly, setDueOnly] = React.useState(false)
+      const [q, setQ] = React.useState('')
       const subjects = (s.state.settings && s.state.settings.subjects) || []
+      const allTags = s.tags || []
 
       const move = (id, status, beforeId) => store.apply('task.move', { id, status, beforeId: beforeId || undefined })
       const del = (id) => store.apply('task.delete', { id })
       const add = (payload) => store.apply('task.add', payload)
+      const toggleReview = (id, on) => store.apply(on ? 'review.schedule' : 'review.unschedule', { id })
+      const pickTag = (tag) => setTags((cur) => (cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag]))
 
-      return h('div', { className: 'sd-board' }, STATUS_META.map((meta) => {
-        let tasks = tasksIn(meta.id)
-        if (meta.id === 'done') {
-          tasks = tasks.slice().sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 30)
-        }
-        return h(Column, {
-          key: meta.id,
-          meta,
-          tasks,
-          minutes: s.minutes,
-          subjects,
-          hover,
-          setHover,
-          confirmId,
-          setConfirmId,
-          dragging,
-          setDragging,
-          onMove: move,
-          onDelete: del,
-          onAdd: add,
-        })
-      }))
+      const needle = q.trim().toLowerCase()
+      const today = dayKey(Date.now())
+      const filtering = !!(subject || tags.length || dueOnly || needle)
+      const keep = (t) => {
+        if (subject && (t.subject || '未归类') !== subject) return false
+        if (tags.length && !tags.every((tag) => (t.tags || []).includes(tag))) return false
+        if (dueOnly && !(t.review && t.review.due && t.review.due <= today)) return false
+        if (needle && !(`${t.title} ${t.note || ''} ${(t.tags || []).join(' ')}`.toLowerCase().includes(needle))) return false
+        return true
+      }
+
+      return h('div', { className: 'sd-boardwrap' }, [
+        h('div', { className: 'sd-filters', key: 'f' }, [
+          h('span', { className: 'sd-search', key: 'q' }, [
+            h(Icon, { name: 'search', size: 13, key: 'i' }),
+            h('input', {
+              key: 'i2',
+              className: 'sd-search-input',
+              type: 'search',
+              value: q,
+              placeholder: '搜标题 / 备注 / 标签',
+              onChange: (e) => setQ(e.target.value),
+            }),
+          ]),
+          h('select', {
+            key: 's', className: 'sd-select sm', value: subject,
+            onChange: (e) => setSubject(e.target.value),
+          }, [
+            h('option', { key: '', value: '' }, '全部科目'),
+            ...[...new Set([...subjects.map((x) => x.label), ...s.state.tasks.map((t) => t.subject).filter(Boolean)])]
+              .map((label) => h('option', { key: label, value: label }, label)),
+            h('option', { key: '__none', value: '未归类' }, '未归类'),
+          ]),
+          h('button', {
+            key: 'd', className: 'sd-pill sm' + (dueOnly ? ' on' : ''),
+            title: '只看今天该复习的卡（含逾期）',
+            onClick: () => setDueOnly((v) => !v),
+          }, `只看到期${s.review && s.review.due ? ` ${s.review.due}` : ''}`),
+          allTags.length
+            ? h('span', { className: 'sd-tagrow', key: 't' }, allTags.slice(0, 12).map((x) => h('button', {
+              key: x.tag,
+              className: 'sd-tagchip sm' + (tags.includes(x.tag) ? ' on' : ''),
+              onClick: () => pickTag(x.tag),
+            }, [h('span', { key: 'n' }, x.tag), h('span', { className: 'sd-tagcount', key: 'c' }, String(x.count))])))
+            : null,
+          filtering
+            ? h('button', { key: 'x', className: 'sd-textbtn sm', onClick: () => { setSubject(''); setTags([]); setDueOnly(false); setQ('') } }, '清空过滤')
+            : null,
+        ]),
+        h('div', { className: 'sd-board', key: 'b' }, STATUS_META.map((meta) => {
+          const all = tasksIn(meta.id)
+          let tasks = filtering ? all.filter(keep) : all
+          let total = all.length
+          if (meta.id === 'done') {
+            tasks = tasks.slice().sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 30)
+            total = all.length
+          }
+          return h(Column, {
+            key: meta.id,
+            meta,
+            tasks,
+            total,
+            filtered: filtering,
+            minutes: s.minutes,
+            subjects,
+            hover,
+            setHover,
+            confirmId,
+            setConfirmId,
+            dragging,
+            setDragging,
+            onMove: move,
+            onDelete: del,
+            onAdd: add,
+            onToggleReview: toggleReview,
+            onPickTag: pickTag,
+            activeTags: tags,
+          })
+        })),
+      ])
     }
 
     // -----------------------------------------------------------------------
@@ -858,6 +1038,158 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
+    // 今日复习队列
+    // -----------------------------------------------------------------------
+
+    function ReviewQueue() {
+      const s = useStore()
+      const st = s.review || {}
+      const queue = s.due || []
+      const [busy, setBusy] = React.useState(null)
+      const grade = (id, g) => {
+        setBusy(id)
+        Promise.resolve(store.apply('review.grade', { id, grade: g })).finally(() => setBusy(null))
+      }
+      const limit = Number(s.state.settings.reviewQueueSize) || 10
+      const shown = queue.slice(0, limit)
+
+      return h('section', { className: 'sd-card-block sd-review' }, [
+        h('div', { className: 'sd-block-head', key: 'h' }, [
+          h('h2', { className: 'sd-block-title', key: 't' }, [
+            h(Icon, { name: 'repeat', size: 14, key: 'i' }),
+            h('span', { key: 'x' }, ' 今日复习'),
+          ]),
+          h('span', { className: 'sd-block-sub', key: 's' }, st.scheduled
+            ? `排期 ${st.scheduled} 张 · 待过 ${st.due}（逾期 ${st.overdue}）· 今天已打分 ${st.doneToday} 次 · 本周 ${st.weekDone} 次`
+            : '还没有卡进入复习循环'),
+        ]),
+        shown.length
+          ? h('div', { className: 'sd-review-list', key: 'l' }, shown.map((t) => h('div', { className: 'sd-review-row', key: t.id }, [
+            h('div', { className: 'sd-review-main', key: 'm' }, [
+              h('div', { className: 'sd-review-title', key: 'a' }, t.title),
+              h('div', { className: 'sd-review-meta', key: 'b' }, [
+                t.subject ? h('span', { className: 'sd-tag', key: 's' }, t.subject) : null,
+                h('span', { className: 'sd-due late', key: 'd' }, dueLabel(t.review.due)),
+                h('span', { className: 'sd-review-cap', key: 'r' }, `第 ${t.review.reps + 1} 遍 · 上次间隔 ${t.review.intervalDays} 天 · 难度 ${t.review.ease}`),
+              ]),
+            ]),
+            h('div', { className: 'sd-review-acts', key: 'c' }, GRADES.map((g) => h('button', {
+              key: g,
+              className: 'sd-grade ' + g,
+              disabled: busy === t.id,
+              title: g === 'again' ? '忘了：间隔清零，今天之内再来一遍'
+                : g === 'easy' ? '很简单：间隔拉长一点'
+                  : '记得：按难度推进间隔',
+              onClick: () => grade(t.id, g),
+            }, GRADE_LABEL[g]))),
+          ])))
+          : h('div', { className: 'sd-empty-block', key: 'e' }, st.scheduled
+            ? '今天该复习的都过完了。想加练就把更多卡拉进复习循环（卡片右下角的 ↻）。'
+            : '在卡片上点 ↻ 把它拉进复习循环。政治选择题、英语单词、专业课名词解释最适合这套：'
+              + '「忘了」今天再来一遍，「记得」按难度把间隔越拉越长。'),
+        queue.length > shown.length
+          ? h('div', { className: 'sd-review-more', key: 'm' }, `队列里还有 ${queue.length - shown.length} 张没摆出来（每次摆几张在设置页里调）`)
+          : null,
+      ])
+    }
+
+    // -----------------------------------------------------------------------
+    // 周报
+    // -----------------------------------------------------------------------
+
+    function Weekly() {
+      const s = useStore()
+      const weeks = (s.weekly && s.weekly.weeks) || []
+      const goal = (s.weekly && s.weekly.goalWeekly) || 0
+      const max = Math.max(goal, ...weeks.map((w) => w.minutes), 60)
+      const cur = weeks[weeks.length - 1]
+
+      return h('section', { className: 'sd-card-block' }, [
+        h('div', { className: 'sd-block-head', key: 'h' }, [
+          h('h2', { className: 'sd-block-title', key: 't' }, '周报'),
+          h('span', { className: 'sd-block-sub', key: 's' }, cur
+            ? `本周 ${fmtMinutes(cur.minutes)}${goal ? ` / 目标 ${fmtMinutes(goal)}` : ''}${cur.deltaPct === null ? '' : ` · 比上周${cur.deltaPct >= 0 ? '+' : ''}${cur.deltaPct}%`}`
+            : '还没有记录'),
+        ]),
+        weeks.length
+          ? h('div', { className: 'sd-weeks', key: 'w' }, weeks.map((w) => {
+            const pct = Math.round((w.minutes / max) * 100)
+            return h('div', {
+              key: w.key,
+              className: 'sd-week' + (w.current ? ' current' : ''),
+              title: `${w.key} 起那一周：${fmtMinutes(w.minutes)} · 学了 ${w.daysActive} 天 · 复习 ${w.reviews} 次${w.deltaPct === null ? '' : ` · 环比 ${w.deltaPct}%`}`,
+            }, [
+              h('div', { className: 'sd-week-track', key: 't' },
+                h('div', { className: 'sd-week-fill', style: { height: Math.max(pct, w.minutes ? 3 : 0) + '%' } })),
+              h('span', { className: 'sd-week-min', key: 'm' }, w.minutes ? fmtShort(w.minutes) : ''),
+              h('span', { className: 'sd-week-label', key: 'l' }, w.key.slice(5)),
+            ])
+          }))
+          : null,
+        cur && cur.bySubject && cur.bySubject.length
+          ? h('div', { className: 'sd-subj-list', key: 's' }, cur.bySubject.slice(0, 5).map((x) => h('div', { className: 'sd-subj', key: x.label }, [
+            h('span', { className: 'sd-subj-label', key: 'n' }, x.label),
+            h('div', { className: 'sd-subj-bar', key: 'b' },
+              h('div', { className: 'sd-bar-fill', style: { width: (x.minutes / Math.max(cur.minutes, 1)) * 100 + '%' } })),
+            h('span', { className: 'sd-subj-min', key: 'm' }, fmtMinutes(x.minutes)),
+          ])))
+          : h('div', { className: 'sd-empty-block', key: 'e' }, '本周还没有专注记录。'),
+      ])
+    }
+
+    // -----------------------------------------------------------------------
+    // 每日复盘
+    // -----------------------------------------------------------------------
+
+    function JournalBlock({ now }) {
+      const s = useStore()
+      const today = dayKey(now)
+      const saved = ((s.state.journal || {})[today]) || ''
+      const [draft, setDraft] = React.useState(saved)
+      const dirty = draft !== saved
+
+      React.useEffect(() => { setDraft(saved) }, [today])
+
+      const save = () => store.apply('journal.set', { text: draft, date: today })
+      const recent = (s.journalLog || []).filter((x) => x.date !== today).slice(0, 6)
+
+      return h('section', { className: 'sd-card-block sd-journal' }, [
+        h('div', { className: 'sd-block-head', key: 'h' }, [
+          h('h2', { className: 'sd-block-title', key: 't' }, [
+            h(Icon, { name: 'pen', size: 14, key: 'i' }),
+            h('span', { key: 'x' }, ' 今日复盘'),
+          ]),
+          h('span', { className: 'sd-block-sub', key: 's' }, today),
+        ]),
+        h('textarea', {
+          key: 'ta',
+          className: 'sd-journal-input',
+          rows: 3,
+          value: draft,
+          placeholder: '今天卡在哪、明天第一件事做什么。写在这里，模型下一轮对话就能看见。',
+          onChange: (e) => setDraft(e.target.value),
+          onKeyDown: (e) => {
+            if (e.key === 'Escape') setDraft(saved)
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save() }
+          },
+        }),
+        h('div', { className: 'sd-row', key: 'r' }, [
+          h('button', {
+            className: 'sd-textbtn primary', disabled: !dirty, onClick: save,
+          }, dirty ? '保存' : '已保存'),
+          dirty ? h('button', { className: 'sd-textbtn', onClick: () => setDraft(saved) }, '撤销') : null,
+          h('span', { className: 'sd-block-sub', key: 'h' }, 'Ctrl+回车保存'),
+        ]),
+        recent.length
+          ? h('div', { className: 'sd-journal-list', key: 'l' }, recent.map((x) => h('div', { className: 'sd-journal-item', key: x.date }, [
+            h('span', { className: 'sd-journal-date', key: 'd' }, x.date.slice(5)),
+            h('span', { className: 'sd-journal-text', key: 't' }, x.text),
+          ])))
+          : null,
+      ])
+    }
+
+    // -----------------------------------------------------------------------
     // 整页面板
     // -----------------------------------------------------------------------
 
@@ -873,14 +1205,19 @@ window.__ModuleLoader__.load({
             h(Head, { key: 'head', now }),
             h(TimerPanel, { key: 'timer', now }),
             s.error ? h('div', { className: 'sd-error', key: 'err' }, '工作台数据读取失败：' + s.error) : null,
+            h(ReviewQueue, { key: 'review' }),
             h('div', { className: 'sd-section-title', key: 'st' }, [
               h('span', { key: 'a' }, '待办墙'),
-              h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · 或点卡片上的箭头'),
+              h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · 输入 #标签 直接打标 · ↻ 把卡拉进复习循环'),
             ]),
             h(Board, { key: 'board' }),
             h('div', { className: 'sd-two', key: 'two' }, [
               h(Heatmap, { key: 'heat', now }),
               h(Stats, { key: 'stats', now }),
+            ]),
+            h('div', { className: 'sd-two', key: 'two2' }, [
+              h(Weekly, { key: 'weekly' }),
+              h(JournalBlock, { key: 'journal', now }),
             ]),
             h('div', { className: 'sd-foot', key: 'f' },
               `数据：${s.deskFile || '—'}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
@@ -1104,6 +1441,13 @@ window.__ModuleLoader__.load({
             h('span', { className: 'sd-mini-cap', key: 'c' }, '待办墙'),
             h('span', { key: 'v' }, `${tasksIn('doing').length} 进行中 · ${tasksIn('todo').length} 待办`),
           ]),
+          h('div', { className: 'sd-mini-row', key: 'r2b' }, [
+            h('span', { className: 'sd-mini-cap', key: 'c' }, '复习'),
+            h('span', { key: 'v', className: (s.review && s.review.due ? 'sd-mini-late' : '') },
+              s.review && s.review.scheduled
+                ? `${s.review.due} 张到期 · 今天已过 ${s.review.doneToday} 次`
+                : '还没有卡进入复习循环'),
+          ]),
           timer && isFocus && !timer.running ? h('button', {
             key: 'abandon', className: 'sd-textbtn', onClick: () => store.apply('timer.reset'),
           }, '放弃这一段') : null,
@@ -1174,7 +1518,7 @@ window.__ModuleLoader__.load({
       const patch = (p) => store.apply('settings.update', { patch: p })
       return h('div', { className: 'sd-settings' }, [
         h('p', { className: 'sd-settings-note', key: 'n' },
-          '考研工作台：待办墙 + 学习热力图 + 番茄钟。数据只存在本机，不联网。'),
+          '考研工作台：待办墙 + 间隔重复复习队列 + 学习热力图与周报 + 番茄钟 + 每日复盘。数据只存在本机，不联网。'),
         h('div', { className: 'sd-settings-grid', key: 'g' }, [
           h(NumField, { key: 'goal', label: '每日目标（分钟）', value: st.dailyGoalMin || 180, min: 10, max: 1440, onCommit: (v) => patch({ dailyGoalMin: v }) }),
           h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 180, onCommit: (v) => patch({ focusMin: v }) }),
@@ -1182,16 +1526,19 @@ window.__ModuleLoader__.load({
           h(NumField, { key: 'lb', label: '长休息（分钟）', value: st.longBreakMin || 15, min: 1, max: 120, onCommit: (v) => patch({ longBreakMin: v }) }),
           h(NumField, { key: 'rw', label: '几轮后长休息', value: st.roundsBeforeLong || 4, min: 2, max: 12, onCommit: (v) => patch({ roundsBeforeLong: v }) }),
           h(NumField, { key: 'sm', label: '打卡门槛（分钟）', hint: '一天至少专注这么多才算连续打卡', value: st.streakMin || 10, min: 1, max: 240, onCommit: (v) => patch({ streakMin: v }) }),
+          h(NumField, { key: 'rq', label: '复习队列每次摆几张', hint: '到期很多时避免一眼看不到头，剩下的明天接着过', value: st.reviewQueueSize || 10, min: 1, max: 60, onCommit: (v) => patch({ reviewQueueSize: v }) }),
         ]),
         h('label', { className: 'sd-field sd-field-inline', key: 'inj' }, [
           h('input', {
             key: 'c', type: 'checkbox', checked: st.injectPrompt !== false,
             onChange: (e) => patch({ injectPrompt: e.target.checked }),
           }),
-          h('span', { key: 'l' }, '每轮对话把「今天该做什么」告诉模型'),
+          h('span', { key: 'l' }, '每轮对话把「今天该做什么、该复习什么、昨天卡在哪」告诉模型'),
           h('span', { className: 'sd-field-hint', key: 'h' }, '关掉能省一点上下文'),
         ]),
         h('div', { className: 'sd-settings-file', key: 'f' }, `数据文件：${s.deskFile || '—'}`),
+        h('div', { className: 'sd-settings-file', key: 'f2' },
+          `Markdown：${s.markdownFile || '（还没导出过）'} —— 把它软链进 Obsidian vault 就能当笔记改，改完在工作台点「从 Markdown 读回」`),
       ])
     }
 
@@ -1274,6 +1621,25 @@ window.__ModuleLoader__.load({
       '.sd-section-title{display:flex;align-items:baseline;gap:10px;font-size:12px;letter-spacing:.1em;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-l1);padding-bottom:7px}',
       '.sd-section-hint{letter-spacing:0;font-size:11px;color:var(--dsw-alias-label-dimmed);margin-left:auto}',
       // 看板
+      '.sd-boardwrap{display:flex;flex-direction:column;gap:10px}',
+      '.sd-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.sd-search{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-tertiary)}',
+      '.sd-search-input{border:none;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:12px;width:170px}',
+      '.sd-tagrow{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}',
+      '.sd-tagchip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:11px;padding:1px 8px;border-radius:999px;cursor:pointer;transition:color .12s ease,border-color .12s ease,background .12s ease}',
+      '.sd-tagchip:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3)}',
+      '.sd-tagchip.on{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}',
+      '.sd-tagchip.sm{font-size:10.5px;padding:0 7px}',
+      '.sd-tagcount{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-card-tags{display:flex;flex-wrap:wrap;gap:4px}',
+      '.sd-due{font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.sd-due.late{color:var(--dsw-alias-state-error-primary)}',
+      '.sd-card.due{box-shadow:inset 2px 0 0 color-mix(in srgb,var(--dsw-alias-state-error-primary) 60%,transparent)}',
+      '.sd-textbtn.sm{font-size:11px;padding:2px 8px}',
+      '.sd-textbtn:disabled{opacity:.5;cursor:default}',
+      '.sd-hidden-file{display:none}',
+      '.sd-mdrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}',
+      '.sd-mdnote{font-size:11px;color:var(--dsw-alias-label-tertiary);max-width:26em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.sd-board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}',
       '.sd-col{border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:10px;display:flex;flex-direction:column;gap:9px;min-height:120px;transition:border-color .15s ease,background .15s ease}',
       '.sd-col.hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}',
@@ -1340,6 +1706,37 @@ window.__ModuleLoader__.load({
       '.sd-subj-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
       '.sd-subj-min{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
       '.sd-empty-block{font-size:11.5px;color:var(--dsw-alias-label-dimmed);line-height:1.6}',
+      // 今日复习
+      '.sd-block-title{display:flex;align-items:center;gap:6px}',
+      '.sd-review-list{display:flex;flex-direction:column;gap:8px}',
+      '.sd-review-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2);padding:8px 10px}',
+      '.sd-review-main{flex:1;min-width:12em;display:flex;flex-direction:column;gap:5px}',
+      '.sd-review-title{font-size:13px;line-height:1.5;word-break:break-word}',
+      '.sd-review-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:11px}',
+      '.sd-review-cap{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-review-acts{display:flex;align-items:center;gap:6px;flex:none;margin-left:auto}',
+      '.sd-grade{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;padding:3px 11px;border-radius:8px;cursor:pointer;transition:color .12s ease,border-color .12s ease,background .12s ease}',
+      '.sd-grade:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}',
+      '.sd-grade:disabled{opacity:.5;cursor:default}',
+      '.sd-grade.again{color:var(--dsw-alias-state-error-primary)}',
+      '.sd-grade.good{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,transparent)}',
+      '.sd-grade.easy{color:var(--dsw-alias-state-success-primary)}',
+      '.sd-review-more{font-size:11px;color:var(--dsw-alias-label-dimmed)}',
+      // 周报
+      '.sd-weeks{display:flex;align-items:flex-end;gap:6px;height:104px}',
+      '.sd-week{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}',
+      '.sd-week-track{flex:1;width:100%;max-width:26px;display:flex;align-items:flex-end;border-radius:6px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
+      '.sd-week-fill{width:100%;border-radius:6px 6px 0 0;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);transition:height .3s ease}',
+      '.sd-week.current .sd-week-fill{background:var(--dsw-alias-brand-primary)}',
+      '.sd-week-min{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:12px}',
+      '.sd-week-label{font-size:10px;color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      // 每日复盘
+      '.sd-journal-input{width:100%;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;padding:8px 10px;outline:none;font-family:inherit}',
+      '.sd-journal-input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.sd-journal-list{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px}',
+      '.sd-journal-item{display:grid;grid-template-columns:3.4em 1fr;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
+      '.sd-journal-date{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-journal-text{white-space:pre-wrap;word-break:break-word;line-height:1.55}',
       '.sd-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       '.sd-foot{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;word-break:break-all}',
       // 迷你条
@@ -1356,6 +1753,7 @@ window.__ModuleLoader__.load({
       '.sd-mini-row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
       '.sd-mini-row .sd-mini-cap{flex:none}',
       '.sd-mini-actions{gap:6px}',
+      '.sd-mini-late{color:var(--dsw-alias-state-error-primary)}',
       '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
       // 松手吸附时给 left/top 加一段过渡，视觉上「啪」地贴边
