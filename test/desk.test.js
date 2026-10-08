@@ -5,14 +5,23 @@ import {
   addTask,
   dayKey,
   daysUntil,
+  dueQueue,
+  gradeTask,
   heatmap,
+  journalRecent,
   logSession,
   normalize,
+  normalizeTags,
   reorderTask,
+  reviewStats,
+  scheduleTask,
+  setJournal,
   streak,
   subjectBreakdown,
+  summary,
   todayMinutes,
   updateSettings,
+  weeklyReport,
 } from '../desk.js'
 import { completeTimer, pauseTimer, reconcileTimer, remainingMs, startTimer } from '../timer.js'
 
@@ -155,4 +164,131 @@ test('连续四轮专注后是长休息', () => {
     reconcileTimer(s, now)              // 休息结束
   }
   assert.equal(s.sessions.filter((x) => x.kind === 'focus').length, 4)
+})
+
+// ---------------------------------------------------------------- 间隔重复
+
+test('间隔重复：三档打分推进间隔，「忘了」清零但留在今晚', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '名词解释：新公共管理', tags: '#名词解释, 错题', review: true }, T0)
+  assert.deepEqual(a.tags, ['名词解释', '错题'])
+  assert.equal(a.review.due, '2026-10-08')
+
+  gradeTask(s, a.id, 'good', T0)
+  assert.equal(a.review.intervalDays, 1)
+  assert.equal(a.review.due, '2026-10-09')
+  assert.equal(a.review.reps, 1)
+
+  // 第二天再「记得」：按难度 2.5 倍乘，且一定比上一次长
+  const day2 = new Date(2026, 9, 9, 9, 0, 0).getTime()
+  gradeTask(s, a.id, 'good', day2)
+  assert.equal(a.review.intervalDays, 3)
+  assert.equal(a.review.due, '2026-10-12')
+
+  // 「忘了」：间隔清零、难度下调、次数归零，今天之内再来一遍
+  const day3 = new Date(2026, 9, 12, 9, 0, 0).getTime()
+  gradeTask(s, a.id, 'again', day3)
+  assert.equal(a.review.intervalDays, 0)
+  assert.equal(a.review.due, '2026-10-12')
+  assert.equal(a.review.reps, 0)
+  assert.equal(a.review.lapses, 1)
+  assert.equal(a.review.ease, 2.3)
+
+  // 「很简单」：首次就给 4 天，难度上调
+  const b = addTask(s, { title: '英语单词：ambiguous' })
+  scheduleTask(s, b.id, null, T0)
+  gradeTask(s, b.id, 'easy', T0)
+  assert.equal(b.review.intervalDays, 4)
+  assert.equal(b.review.due, '2026-10-12')
+  assert.equal(b.review.ease, 2.65)
+
+  assert.equal(s.reviews.length, 4)
+  assert.equal(s.reviews[0].grade, 'good')
+  assert.equal(s.reviews[0].taskId, a.id)
+})
+
+test('到期队列按逾期程度排，已完成的卡也照样复习', () => {
+  const s = normalize(null)
+  const late = addTask(s, { title: '马原原理' })
+  const fresh = addTask(s, { title: '当代中国政府' })
+  const done = addTask(s, { title: '英语阅读技巧', status: 'done' })
+  scheduleTask(s, late.id, '2026-10-06', T0)
+  scheduleTask(s, fresh.id, '2026-10-08', T0)
+  scheduleTask(s, done.id, '2026-10-07', T0)
+  assert.deepEqual(dueQueue(s, T0).map((t) => t.title), ['马原原理', '英语阅读技巧', '当代中国政府'])
+
+  const st = reviewStats(s, T0)
+  assert.equal(st.scheduled, 3)
+  assert.equal(st.due, 3)
+  assert.equal(st.overdue, 2)
+  assert.equal(st.dueToday, 1)
+  assert.equal(st.doneToday, 0)
+
+  // 打完一张就少一张：due 是「还没过的」，doneToday 是「今天已经过的」
+  gradeTask(s, late.id, 'good', T0)
+  const after = reviewStats(s, T0)
+  assert.equal(after.due, 2)
+  assert.equal(after.doneToday, 1)
+  assert.equal(after.weekDone, 1)
+
+  const sum = summary(s, T0)
+  assert.equal(sum.review.due, 2)
+  assert.equal(sum.due[0].title, '英语阅读技巧')
+  assert.equal(sum.due[0].overdueDays, 1)
+  assert.equal(sum.journal.today, '')
+})
+
+// ---------------------------------------------------------------- 标签 / 复盘 / 周报
+
+test('标签归一化：吃串、去井号、去重、有上限', () => {
+  assert.deepEqual(normalizeTags('#名词解释, 错题,, 名词解释'), ['名词解释', '错题'])
+  assert.deepEqual(normalizeTags([' 带空格 ', '带空格']), ['带空格'])
+  assert.deepEqual(normalizeTags(null), [])
+  assert.equal(normalizeTags(Array.from({ length: 30 }, (_, i) => 't' + i)).length, 12)
+})
+
+test('日复盘：写今天、按日期倒序、空文本即删除', () => {
+  const s = normalize(null)
+  setJournal(s, '政治选择题错 8 个，都在马原', undefined, T0)
+  setJournal(s, '上午效率还行', '2026-10-06', T0)
+  assert.equal(s.journal['2026-10-08'], '政治选择题错 8 个，都在马原')
+  assert.deepEqual(journalRecent(s, T0, 5).map((x) => x.date), ['2026-10-08', '2026-10-06'])
+
+  setJournal(s, '   ', '2026-10-06', T0)
+  assert.equal(s.journal['2026-10-06'], undefined)
+  assert.throws(() => setJournal(s, 'x', '10月6号', T0), /YYYY-MM-DD/)
+})
+
+test('周报：按周聚合时长与科目，并给出与上周的增减', () => {
+  const s = normalize(null)
+  updateSettings(s, { dailyGoalMin: 180 })
+  logSession(s, { minutes: 100, at: T0, subject: '631 公共管理' })
+  logSession(s, { minutes: 20, at: T0, subject: '政治' })
+  const lastWeek = new Date(2026, 8, 30, 10, 0, 0).getTime()
+  logSession(s, { minutes: 60, at: lastWeek, subject: '英语' })
+
+  const rep = weeklyReport(s, 2, T0)
+  assert.equal(rep.weeks.length, 2)
+  assert.equal(rep.weeks[0].key, '2026-09-28')
+  assert.equal(rep.weeks[0].minutes, 60)
+  assert.equal(rep.weeks[0].deltaPct, null)
+  assert.equal(rep.weeks[1].minutes, 120)
+  assert.equal(rep.weeks[1].deltaPct, 100)
+  assert.equal(rep.weeks[1].current, true)
+  assert.equal(rep.weeks[1].daysActive, 1)
+  assert.deepEqual(rep.weeks[1].bySubject, [
+    { label: '631 公共管理', minutes: 100 },
+    { label: '政治', minutes: 20 },
+  ])
+  assert.equal(rep.goalWeekly, 1260)
+})
+
+test('老数据没有 review / tags / journal 字段也能补齐', () => {
+  const s = normalize({ version: 1, tasks: [{ id: 'a', title: '旧卡', status: 'doing' }], sessions: [] })
+  assert.deepEqual(s.tasks[0].tags, [])
+  assert.equal(s.tasks[0].review.due, null)
+  assert.equal(s.tasks[0].review.ease, 2.5)
+  assert.deepEqual(s.reviews, [])
+  assert.deepEqual(s.journal, {})
+  assert.equal(s.settings.reviewQueueSize, 10)
 })
