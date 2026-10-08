@@ -1,0 +1,12 @@
+# dsh-study-desk bundle patch：宿主插件（study_desk 工具 + /api/dsh-study-desk 路由
+# + system-prompt 摘要注入），客户端半边由 package.json 的 dsh.client 声明。
+# 纯 insert（只有 id/name）可以热挂载，不用重启。
+#
+# name 用裸包名 —— 这是可移植、可发布的形态（启动期装配按包名解析）。
+# 本机为了在运行中的 DSH 里热挂载调试，会被 install.mjs 改写成
+#     name: file:///<本机绝对路径>/index.js?v=N
+# 那个形态带本机路径，**不要提交**（`git checkout cordis.patch.yml` 即可还原）。
+# 为什么热挂载必须用完整 URL，见 AGENTS.md 的「坑 1」。
+- insert:
+    - id: dsh-study-desk
+      name: dsh-study-desk
