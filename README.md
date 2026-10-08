@@ -30,6 +30,14 @@
 
 界面**只消费**宿主的 `--dsw-alias-*` / `--dsw-static-*` 主题 token，不覆写任何 token、不写死任何颜色。换主题（含 catppuccin 之类的 remap）它跟着变，明暗两套都成立。
 
+## 长什么样
+
+![工作台（亮色）](assets/desk-light.png)
+
+![工作台（暗色）](assets/desk-dark.png)
+
+> 两张图是用真实组件与示例数据在无头浏览器里渲染的（同一套代码的明暗两套主题），不是某次实际运行的截屏。
+
 ## 安装
 
 装进某个 DSH profile：
