@@ -281,12 +281,15 @@ check('loader id 与 entry 名一致', () => assert.equal(modDef.id, 'dsh-study-
 
 const requireStub = (id) => {
   if (id === 'react') return React
+  // client.js 把迷你条 portal 到 body（要躲开宿主 shell.overlay 那层的 z-index / pointer-events），
+  // 所以它会 require react-dom；桩给一个原样返回的 createPortal，别把探针拖进真实 DOM。
+  if (id === 'react-dom') return { createPortal: (node) => node }
   throw new Error('unexpected require: ' + id)
 }
 let clientMod = null
 check('factory 能执行完', () => { clientMod = modDef.factory(requireStub) })
 check('client 有 apply', () => { assert.equal(typeof clientMod.apply, 'function') })
-check('client inject = [slots]', () => { assert.deepEqual(clientMod.inject, ['slots']) })
+check('client inject = [slots, layout]', () => { assert.deepEqual(clientMod.inject, ['slots', 'layout']) })
 
 const clientCtx = {
   get(key) {
@@ -353,6 +356,23 @@ check('Boundary 的 where 标签与槽位对得上', () => {
   }
 })
 check('注入了一份 style', () => assert.ok(clientRegistered.effects.length > 0))
+
+// 这两条是防回归：宿主中心列 overflow:hidden、shell.overlay 是 z-index:20 的独立层叠上下文，
+// 面板不自己出滚动容器就看不见下半截，迷你条不自己声明命中/层叠就可能点不动。
+const css = clientMod.__test.CSS || ''
+check('面板自带滚动容器', () => {
+  assert.match(css, /\.sd-panel\{[^}]*min-height:0[^}]*\}/)
+  assert.match(css, /\.sd-scroll\{[^}]*overflow-y:auto[^}]*\}/)
+})
+check('迷你条自己声明 pointer-events 与 z-index', () => {
+  for (const sel of ['.sd-mini{', '.sd-mini-fab{']) {
+    const at = css.indexOf(sel)
+    assert.ok(at > -1, `找不到规则 ${sel}`)
+    const rule = css.slice(at, css.indexOf('}', at) + 1)
+    assert.match(rule, /pointer-events:auto/, `${sel} 缺 pointer-events:auto`)
+    assert.match(rule, /z-index:900/, `${sel} 缺 z-index:900`)
+  }
+})
 
 // ---------------------------------------------------------------- 结果
 console.log('')

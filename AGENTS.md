@@ -94,6 +94,30 @@ ctx.provide('studyDesk', { ... })   // 对
 ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk" without provide
 ```
 
+### 坑 3：宿主外壳不替你滚、也不替你抬层（客户端布局）
+
+这两条都来自 `app.asar` 里的 `@deepseek-ai/dsh-client-ui-layout/AppFrame.module.css`，
+在本仓库里 grep 不到，只能反编译宿主看：
+
+```css
+.BynINW_centerCol   { display:flex; flex-direction:column; overflow:hidden }
+.BynINW_overlayLayer{ position:absolute; inset:0; z-index:20; pointer-events:none }
+.BynINW_overlayLayer > * { pointer-events:auto }
+```
+
+- **`main` 面板必须自己出滚动容器。** 中心列 `overflow:hidden` 且不滚，
+  所以 `.sd-page` 直接铺进去会被压扁、下半截永远看不见。
+  照官方任务管理页那套四层写：`sd-panel`（`flex:1;min-height:0;display:flex`）
+  → `sd-scroll`（`flex:1;min-height:0;overflow-y:auto`）→ `sd-page`（内容）。
+- **`shell.overlay` 里的浮层要 portal 到 `document.body`。** 那一层自己是
+  `z-index:20` 的独立层叠上下文：里面写 `z-index:40` 也只跟层内比，出了这层永远排在 20，
+  任何 body 级 `position:fixed`（宿主的模态 1000、菜单/气泡 1100、tooltip 100）都能盖住它，
+  表现就是「卡片看得见但点不动、拖不动」。`client.js` 里用 `require('react-dom').createPortal`
+  挂到 body，并自带 `pointer-events:auto` 与 `z-index:900`（压在模态下面）。
+  主题 token 定义在 `body` 上，所以 portal 之后 `--dsw-alias-*` 照样取得到。
+  验证过的对照：同一个右下角落点，层内形态被 body 级浮层盖住（`elementFromPoint` 命中的是别人），
+  portal 形态命中自己。
+
 ## 改完怎么生效
 
 宿主半边是 ESM，**模块按 URL 缓存**：

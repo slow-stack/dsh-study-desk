@@ -26,6 +26,19 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
+    // 迷你条要跳出 shell.overlay 那一层（宿主给它的是 z-index:20 + pointer-events:none，
+    // 层内再高的 z-index 也只跟层内比），所以挂到 body 上当作根层叠上下文里的浮层。
+    let createPortal = null
+    try {
+      const ReactDOM = require('react-dom')
+      if (ReactDOM && typeof ReactDOM.createPortal === 'function') createPortal = ReactDOM.createPortal
+    } catch (error) { /* 拿不到 react-dom 就在槽位里原地渲染 */ }
+
+    function toTopLayer(node) {
+      if (!createPortal || !document.body) return node
+      return createPortal(node, document.body)
+    }
+
     // -----------------------------------------------------------------------
     // 常量与工具
     // -----------------------------------------------------------------------
@@ -206,7 +219,13 @@ window.__ModuleLoader__.load({
           if (viaGet) return viaGet
         }
       } catch (error) { /* 退到属性访问 */ }
-      return clientCtx.layout || null
+      // ctx 是 Proxy：没在 inject 里声明过的服务，连属性访问都会抛
+      // "cannot get property "layout" without inject"，所以这条也必须包一层
+      try {
+        return clientCtx.layout || null
+      } catch (error) {
+        return null
+      }
     }
 
     // 渲染炸了要看得见，不能只是白屏
@@ -846,21 +865,26 @@ window.__ModuleLoader__.load({
       const s = useStore()
       const now = useTick(500)
       usePoll(20000)
-      return h('div', { className: 'sd-page' }, [
-        h(Head, { key: 'head', now }),
-        h(TimerPanel, { key: 'timer', now }),
-        s.error ? h('div', { className: 'sd-error', key: 'err' }, '工作台数据读取失败：' + s.error) : null,
-        h('div', { className: 'sd-section-title', key: 'st' }, [
-          h('span', { key: 'a' }, '待办墙'),
-          h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · 或点卡片上的箭头'),
-        ]),
-        h(Board, { key: 'board' }),
-        h('div', { className: 'sd-two', key: 'two' }, [
-          h(Heatmap, { key: 'heat', now }),
-          h(Stats, { key: 'stats', now }),
-        ]),
-        h('div', { className: 'sd-foot', key: 'f' },
-          `数据：${s.deskFile || '—'}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
+      // 宿主的中心列是 flex-direction:column + overflow:hidden，它不会替我们滚：
+      // 官方的任务管理页也是自己出 page > pane > pageScroll > pageContent 四层。
+      return h('div', { className: 'sd-panel' }, [
+        h('div', { className: 'sd-scroll', key: 's' },
+          h('div', { className: 'sd-page', key: 'c' }, [
+            h(Head, { key: 'head', now }),
+            h(TimerPanel, { key: 'timer', now }),
+            s.error ? h('div', { className: 'sd-error', key: 'err' }, '工作台数据读取失败：' + s.error) : null,
+            h('div', { className: 'sd-section-title', key: 'st' }, [
+              h('span', { key: 'a' }, '待办墙'),
+              h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · 或点卡片上的箭头'),
+            ]),
+            h(Board, { key: 'board' }),
+            h('div', { className: 'sd-two', key: 'two' }, [
+              h(Heatmap, { key: 'heat', now }),
+              h(Stats, { key: 'stats', now }),
+            ]),
+            h('div', { className: 'sd-foot', key: 'f' },
+              `数据：${s.deskFile || '—'}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
+          ])),
       ])
     }
 
@@ -912,6 +936,26 @@ window.__ModuleLoader__.load({
       return { x, y }
     }
 
+    // 悬浮卡片被谁盖住，在浏览器里根本看不见：拿命中测试结果回传宿主写盘。
+    // reportDiag 按 kind+where+message 去重，所以反复探也不会把诊断文件灌爆。
+    function probeOverlayHit(el) {
+      if (!el || typeof document.elementFromPoint !== 'function') return
+      const rect = el.getBoundingClientRect()
+      if (!rect.width || !rect.height) return
+      const cx = Math.round(rect.left + rect.width / 2)
+      const cy = Math.round(rect.top + rect.height / 2)
+      const top = document.elementFromPoint(cx, cy)
+      if (!top || top === el || el.contains(top)) return
+      const chain = []
+      for (let node = top; node && chain.length < 3; node = node.parentElement) {
+        const cls = typeof node.className === 'string' && node.className.trim()
+          ? '.' + node.className.trim().split(/\s+/).slice(0, 2).join('.')
+          : ''
+        chain.push(node.tagName.toLowerCase() + cls)
+      }
+      reportDiag({ kind: 'mini-covered', where: 'mini.命中测试', message: `中心 ${cx},${cy} 命中的是 ${chain.join(' < ')}` })
+    }
+
     function MiniBar() {
       const s = useStore()
       const now = useTick(500)
@@ -937,6 +981,8 @@ window.__ModuleLoader__.load({
             dy: event.clientY - rect.top,
             w: rect.width,
             h: rect.height,
+            sx: event.clientX,
+            sy: event.clientY,
             moved: false,
           }
           try { el.setPointerCapture(event.pointerId) } catch (error) { /* 拿不到捕获也照样能拖 */ }
@@ -944,6 +990,8 @@ window.__ModuleLoader__.load({
         onPointerMove: (event) => {
           const d = dragRef.current
           if (!d) return
+          // 手抖的几个像素不算拖动，否则在条身上点一下就被吸到边上去了
+          if (!d.moved && Math.abs(event.clientX - d.sx) + Math.abs(event.clientY - d.sy) < 4) return
           d.moved = true
           setPos(clampMiniPos({ x: event.clientX - d.dx, y: event.clientY - d.dy }, d.w, d.h))
         },
@@ -966,7 +1014,11 @@ window.__ModuleLoader__.load({
             setTimeout(() => setSnapping(false), 280)
           }
         },
-        onDoubleClick: () => { setPos(null); writeMiniPos(null) },
+        onDoubleClick: (event) => {
+          // 双击展开/收起按钮也会冒到这里，那种情况下不该把位置清掉
+          if (event.target && event.target.closest && event.target.closest('button')) return
+          setPos(null); writeMiniPos(null)
+        },
       }
       const posStyle = pos ? { left: pos.x + 'px', top: pos.y + 'px', right: 'auto', bottom: 'auto' } : null
 
@@ -995,18 +1047,24 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('resize', onResize)
       }, [])
 
+      React.useEffect(() => {
+        probeOverlayHit(rootRef.current)
+        const id = setInterval(() => probeOverlayHit(rootRef.current), 5000)
+        return () => clearInterval(id)
+      }, [])
+
       if (hidden) {
-        return h('button', Object.assign({
+        return toTopLayer(h('button', Object.assign({
           ref: rootRef,
           className: 'sd-mini-fab' + (snapping ? ' snapping' : ''),
           title: '展开专注计时（可拖动，双击回右下角）',
           onClick: () => { if (!justDraggedRef.current) setHidden(false) },
           style: posStyle,
-        }, dragHandlers), h(Icon, { name: 'clock', size: 16 }))
+        }, dragHandlers), h(Icon, { name: 'clock', size: 16 })))
       }
       const remaining = timerRemaining(timer, now)
       const isFocus = !timer || timer.kind === 'focus'
-      return h('div', Object.assign({
+      return toTopLayer(h('div', Object.assign({
         ref: rootRef,
         className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle') + (snapping ? ' snapping' : ''),
         style: posStyle,
@@ -1082,7 +1140,7 @@ window.__ModuleLoader__.load({
             h('button', { key: 'hide', className: 'sd-textbtn', onClick: () => { setOpen(false); setHidden(true) } }, '收起成小圆点'),
           ]),
         ]) : null,
-      ])
+      ]))
     }
 
     // -----------------------------------------------------------------------
@@ -1143,6 +1201,9 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       // 页面骨架
+      // 面板外壳：中心列是 overflow:hidden 的 flex 列，滚动条只能由我们自己出
+      '.sd-panel{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;width:100%;height:100%;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
+      '.sd-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;--dsh-scrollbar-width:9px;--dsh-scrollbar-thumb-border:2px}',
       '.sd-page{display:flex;flex-direction:column;gap:18px;padding:22px 26px 48px;max-width:1220px;margin:0 auto;width:100%;box-sizing:border-box;color:var(--dsw-alias-label-primary)}',
       '.sd-page *{box-sizing:border-box}',
       // 顶部
@@ -1282,7 +1343,9 @@ window.__ModuleLoader__.load({
       '.sd-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       '.sd-foot{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;word-break:break-all}',
       // 迷你条
-      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:40;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
+      // 迷你条：portal 到 body 后是根层叠上下文里的浮层，所以要自己声明 pointer-events
+      // 与 z-index（宿主的模态框 1000、菜单/气泡 1100，我们压在它们下面）。
+      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
       '.sd-mini-main{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:grab;touch-action:none;user-select:none}',
       '.sd-mini-main:active{cursor:grabbing}',
       '.sd-mini-grip{flex:none;width:8px;height:14px;opacity:.4;background-image:radial-gradient(currentColor 1px,transparent 1.3px);background-size:4px 4px;background-position:1px 2px;background-repeat:repeat}',
@@ -1293,7 +1356,7 @@ window.__ModuleLoader__.load({
       '.sd-mini-row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
       '.sd-mini-row .sd-mini-cap{flex:none}',
       '.sd-mini-actions{gap:6px}',
-      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:40;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
+      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
       // 松手吸附时给 left/top 加一段过渡，视觉上「啪」地贴边
       '.sd-mini.snapping,.sd-mini-fab.snapping{transition:left .22s cubic-bezier(.2,.8,.2,1),top .22s cubic-bezier(.2,.8,.2,1)}',
@@ -1317,7 +1380,7 @@ window.__ModuleLoader__.load({
 
     let clientCtx = null
 
-    const inject = ['slots']
+    const inject = ['slots', 'layout']
 
     function apply(ctx) {
       clientCtx = ctx
@@ -1436,7 +1499,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = inject
-    exports.__test = { fmtClock, daysUntil, tasksIn }
+    exports.__test = { fmtClock, daysUntil, tasksIn, CSS }
     return module.exports
   },
 })
