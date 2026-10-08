@@ -31,8 +31,10 @@ jobs:
 
       - name: 发布内容自检（files 白名单里必须有 markdown.js）
         run: |
-          npm pack --dry-run | tee pack.log
+          # npm 的清单打在 stderr 上，不并过来 tee 到的是空文件
+          npm pack --dry-run 2>&1 | tee pack.log
           grep -q 'markdown.js' pack.log
+          grep -q 'total files: 12' pack.log
 
   portable:
     name: 可移植性检查
