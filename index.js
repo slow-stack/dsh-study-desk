@@ -201,6 +201,7 @@ function snapshot(state) {
     streak: streak(state),
     focusRoundsToday: countFocusToday(state),
     exam: EXAM,
+    daysToExam: daysUntil(EXAM.start),
     milestones: MILESTONES,
     deskFile: deskFile(),
     version: pluginVersion,

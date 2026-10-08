@@ -144,6 +144,10 @@ check('GET 带 exam 与 deskFile', () => {
   assert.equal(payload.exam.start, '2026-12-19')
   assert.ok(String(payload.deskFile).includes('desk.json'))
 })
+check('GET 带 daysToExam（数字，不是 undefined）', () => {
+  assert.equal(typeof payload.daysToExam, 'number')
+  assert.ok(Number.isFinite(payload.daysToExam))
+})
 
 console.log('[host] /api 路由 POST')
 
