@@ -40,12 +40,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/modusensus/dsh-study-desk.git"
+    "url": "git+https://github.com/slow-stack/dsh-study-desk.git"
   },
   "bugs": {
-    "url": "https://github.com/modusensus/dsh-study-desk/issues"
+    "url": "https://github.com/slow-stack/dsh-study-desk/issues"
   },
-  "homepage": "https://github.com/modusensus/dsh-study-desk#readme",
+  "homepage": "https://github.com/slow-stack/dsh-study-desk#readme",
   "publishConfig": {
     "access": "public",
     "provenance": true

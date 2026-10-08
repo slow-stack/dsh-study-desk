@@ -118,7 +118,7 @@ gh release create v0.2.0 --generate-notes
   外加一条可移植性检查 —— `cordis.patch.yml` 必须是裸包名，代码与文档里不许出现本机用户目录。
   这条是踩过坑加的：patch 里写死某台机器的目录，别人装完直接起不来。
 - **npm 发布**（`.github/workflows/release.yml`）：**手动触发**，不跟 tag 自动联动
-  （发出去的版本删不掉，宁可多点一次按钮）。第一次用之前要在 npmjs.com 上把本仓库配成
+  （发出去的版本删不掉，宁可多点一次按钮）。第一次用之前要在 npmjs.com 上把 slow-stack/dsh-study-desk 配成
   trusted publisher，之后 Actions 免 token 带 provenance 发布。
 - 更新记录见 `CHANGELOG.md`。
 

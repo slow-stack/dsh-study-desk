@@ -39,7 +39,7 @@ jobs:
       - name: 要发的文件清单
         run: npm pack --dry-run
 
-      # 免 token 发布：先在 npmjs.com 把本仓库配成 trusted publisher。
+      # 免 token 发布：先在 npmjs.com 把 slow-stack/dsh-study-desk 配成 trusted publisher。
       # 想用 token：把上面那行换成 npm publish，再配 NPM_TOKEN secret，
       # 并在仓库里放一个 .npmrc 写 registry=https://registry.npmjs.org/ 与
       # //registry.npmjs.org/:_authToken 指向那个 secret（记得把 secret 加进 env）。
