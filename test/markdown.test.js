@@ -37,7 +37,7 @@ const extras = (s) => ({
   minutesByTask: minutesByTask(s),
   reviewStats: reviewStats(s, T0),
   weekly: weeklyReport(s, 2, T0),
-  daysToExam: 72,
+  goal: { label: '2027 届考研初试', date: '2026-12-19', end: '2026-12-20', note: '631 公共管理 + 864', days: 72, milestones: [] },
 })
 
 test('导出再读回：卡片、标签、笔记、复习排期与复盘都对得上', () => {
@@ -64,7 +64,7 @@ test('导出再读回：卡片、标签、笔记、复习排期与复盘都对�
   assert.deepEqual(again, { added: 0, updated: 0 })
 })
 
-const HAND = `# 考研工作台
+const HAND = `# 学习工作台
 
 ## 复盘
 

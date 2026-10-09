@@ -7,11 +7,13 @@ import {
   daysUntil,
   dueQueue,
   gradeTask,
+  goalInfo,
   heatmap,
   journalRecent,
   logSession,
   normalize,
   normalizeTags,
+  parseMilestones,
   reorderTask,
   reviewStats,
   scheduleTask,
@@ -283,6 +285,43 @@ test('周报：按周聚合时长与科目，并给出与上周的增减', () =>
   assert.equal(rep.goalWeekly, 1260)
 })
 
+test('目标与节点：默认是开箱示例，节点文案由 desk.js 一处算', () => {
+  const s = normalize(null)
+  const g = goalInfo(s, T0)
+  assert.equal(g.date, '2026-12-19')
+  assert.equal(g.days, 72)
+  assert.ok(g.milestones.length >= 1)
+  const pre = g.milestones.find((m) => m.label === '预报名')
+  assert.equal(pre.tone, 'future')
+  assert.equal(pre.text, '明天开始')
+  assert.equal(g.milestones.find((m) => m.label === '正式报名').approx, false)
+  assert.equal(g.milestones.find((m) => m.label === '网上确认').approx, true)
+})
+
+test('目标可改成答辩 / 投稿；日期留空就不显示倒计时', () => {
+  const s = normalize(null)
+  updateSettings(s, { goalLabel: '博士资格考试答辩', goalDate: '2026-10-20', goalEnd: '', goalNote: ' committees 面试', milestonesText: '提交材料 2026-10-12\n答辩 2026-10-20~2026-10-21 约' })
+  const g = goalInfo(s, T0)
+  assert.equal(g.label, '博士资格考试答辩')
+  assert.equal(g.days, 12)
+  assert.equal(g.end, '2026-10-20')
+  assert.deepEqual(g.milestones.map((m) => m.label), ['提交材料', '答辩'])
+  assert.equal(g.milestones[1].approx, true)
+
+  updateSettings(s, { goalDate: '' })
+  const off = goalInfo(s, T0)
+  assert.equal(off.date, '')
+  assert.equal(off.days, null)
+})
+
+test('节点文本解析：坏行跳过、倒序区间丢掉、最多 12 条', () => {
+  const list = parseMilestones('报名 2026-10-15~2026-10-24\n这行没有日期\n确认 2026-11-05\n倒着写 2026-12-01~2026-11-01\n\n  空白两侧  2026-11-09  ')
+  assert.deepEqual(list.map((m) => m.label), ['报名', '确认', '空白两侧'])
+  assert.equal(list[1].end, '2026-11-05')
+  assert.equal(parseMilestones(Array.from({ length: 30 }, (_, i) => `n${i} 2026-10-0${(i % 8) + 1}`).join('\n')).length, 12)
+  assert.deepEqual(parseMilestones(null), [])
+})
+
 test('老数据没有 review / tags / journal 字段也能补齐', () => {
   const s = normalize({ version: 1, tasks: [{ id: 'a', title: '旧卡', status: 'doing' }], sessions: [] })
   assert.deepEqual(s.tasks[0].tags, [])
@@ -291,4 +330,6 @@ test('老数据没有 review / tags / journal 字段也能补齐', () => {
   assert.deepEqual(s.reviews, [])
   assert.deepEqual(s.journal, {})
   assert.equal(s.settings.reviewQueueSize, 10)
+  assert.equal(s.settings.goalDate, '2026-12-19')
+  assert.ok(s.settings.milestonesText.includes('预报名'))
 })

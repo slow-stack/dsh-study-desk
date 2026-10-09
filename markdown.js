@@ -60,14 +60,23 @@ function oneLine(text) {
 export function toMarkdown(state, now = Date.now(), extra = {}) {
   const byTask = extra.minutesByTask || new Map()
   const stats = extra.reviewStats || null
+  const goal = extra.goal || null
   const lines = []
   const front = ['---', 'kind: dsh-study-desk', 'version: 1', `generatedAt: ${new Date(now).toISOString()}`]
-  if (extra.daysToExam !== undefined && extra.daysToExam !== null) front.push(`daysToExam: ${extra.daysToExam}`)
+  if (goal && goal.date) {
+    front.push(`goal: ${(goal.label || '目标').replace(/:/g, '－')}`)
+    front.push(`goalDate: ${goal.date}`)
+    if (goal.days !== null) front.push(`daysToGoal: ${goal.days}`)
+  }
   front.push('---', '')
   lines.push(...front)
 
-  lines.push('# 考研工作台')
+  lines.push('# 学习工作台')
   lines.push('')
+  if (goal && goal.date) {
+    lines.push(`> ${goal.label || '目标'} ${goal.date}${goal.note ? ` · ${goal.note}` : ''}`
+      + (goal.days === null ? '' : goal.days >= 0 ? ` · 还有 ${goal.days} 天` : ` · 已过 ${-goal.days} 天`))
+  }
   lines.push('> 这一份是 dsh-study-desk 生成的可编辑视图：改了科目分节、勾选状态或笔记正文，')
   lines.push('> 回到工作台点「从 Markdown 读回」即可。行尾 `<!-- desk:… -->` 是机器字段，删掉不影响读回。')
   lines.push('')

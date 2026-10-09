@@ -1,5 +1,5 @@
 /**
- * dsh-study-desk —— 考研工作台 · 数据层
+ * dsh-study-desk —— 学习工作台 · 数据层
  *
  * 纯 Node 半边，不依赖任何 dsh 内部包，可独立单测（test/desk.test.js）。
  * 数据是一个人类可读的 JSON 文件，放在 dsh home 下：
@@ -41,24 +41,91 @@ export function deskFile() {
 }
 
 // ---------------------------------------------------------------------------
-// 考试日程（2027 届，已核实：初试 2026-12-19~20）
+// 目标与节点（默认值是开箱示例，用户可在设置页改成自己的考试 / 答辩 / 投稿）
 // ---------------------------------------------------------------------------
 
-export const EXAM = {
-  name: '2027 届考研初试',
-  start: '2026-12-19',
+export const DEFAULT_GOAL = {
+  label: '2027 届考研初试',
+  date: '2026-12-19',
   end: '2026-12-20',
   note: '631 公共管理 + 864',
 }
 
-/** 关键节点。kind: 'window' 有起止，'day' 单日。 */
-export const MILESTONES = [
-  { id: 'pre-reg', label: '预报名', kind: 'window', start: '2026-10-09', end: '2026-10-12' },
-  { id: 'reg', label: '正式报名', kind: 'window', start: '2026-10-15', end: '2026-10-24' },
-  { id: 'confirm', label: '网上确认', kind: 'window', start: '2026-11-01', end: '2026-11-05', approx: true },
-  { id: 'ticket', label: '打印准考证', kind: 'window', start: '2026-12-10', end: '2026-12-19', approx: true },
-  { id: 'exam', label: '初试', kind: 'window', start: '2026-12-19', end: '2026-12-20' },
-]
+/**
+ * 节点用纯文本存，一行一个：`名称 起[~止] [约]`。
+ * 比表格编辑器少一大截 UI，而且符合「数据就是能手改的文本」这一套。
+ */
+export const DEFAULT_MILESTONES_TEXT = [
+  '预报名 2026-10-09~2026-10-12',
+  '正式报名 2026-10-15~2026-10-24',
+  '网上确认 2026-11-01~2026-11-05 约',
+  '打印准考证 2026-12-10~2026-12-19 约',
+].join('\n')
+
+const MILESTONE_RE = /^\s*(.+?)\s+(\d{4}-\d{2}-\d{2})(?:\s*[~～]\s*(\d{4}-\d{2}-\d{2}))?\s*(约|≈|approx)?\s*$/i
+
+/** 解析节点文本；写坏的行跳过而不是整块报错。 */
+export function parseMilestones(text) {
+  const out = []
+  const lines = String(text ?? '').split(/\r?\n/)
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim()
+    if (!line) continue
+    const m = MILESTONE_RE.exec(line)
+    if (!m) continue
+    const start = m[2]
+    const end = m[3] || m[2]
+    if (end < start) continue
+    out.push({
+      id: `m${i}-${out.length}`,
+      label: m[1].trim().slice(0, 24),
+      start,
+      end,
+      approx: Boolean(m[4]) || /约|≈/.test(m[4] || ''),
+    })
+  }
+  return out.slice(0, 12)
+}
+
+/**
+ * 目标与节点的全部派生计算都在这一个函数里：倒计时天数、每个节点的
+ * 语气（未来 / 进行中 / 已过）和人话文案。客户端只渲染，不再算一遍。
+ */
+export function goalInfo(state, now = Date.now()) {
+  const st = state.settings || {}
+  const rawDate = String(st.goalDate ?? '').trim()
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : ''
+  const rawEnd = String(st.goalEnd ?? '').trim()
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(rawEnd) && rawEnd >= date ? rawEnd : date
+  const label = String(st.goalLabel ?? '').trim()
+  const milestones = parseMilestones(st.milestonesText).map((m) => {
+    const toStart = daysUntil(m.start, now)
+    const toEnd = daysUntil(m.end, now)
+    let tone = 'future'
+    let text = `${toStart} 天后`
+    if (toEnd < 0) { tone = 'past'; text = '已结束' }
+    else if (toStart === 0) { tone = 'now'; text = toEnd === 0 ? '就是今天' : '进行中 · 今天最后一天' }
+    else if (toStart < 0 && toEnd >= 0) { tone = 'now'; text = `进行中 · 还剩 ${toEnd + 1} 天` }
+    else if (toStart === 1) text = '明天开始'
+    return { ...m, toStart, toEnd, tone, text }
+  })
+  return {
+    label,
+    date,
+    end,
+    note: String(st.goalNote ?? '').trim(),
+    days: date ? daysUntil(date, now) : null,
+    milestones,
+  }
+}
+
+/** 下一个还没结束的节点，给摘要用。 */
+export function nextMilestone(state, now = Date.now()) {
+  const list = goalInfo(state, now).milestones
+    .filter((m) => m.toEnd >= 0)
+    .sort((a, b) => a.toStart - b.toStart)
+  return list[0] || null
+}
 
 // ---------------------------------------------------------------------------
 // 默认值
@@ -85,6 +152,13 @@ export const DEFAULT_SETTINGS = {
   streakMin: 10,
   /** 是否往系统提示里注入工作台摘要。 */
   injectPrompt: true,
+  /** 倒计时指向什么。留空 date 就不显示那一块。 */
+  goalLabel: DEFAULT_GOAL.label,
+  goalDate: DEFAULT_GOAL.date,
+  goalEnd: DEFAULT_GOAL.end,
+  goalNote: DEFAULT_GOAL.note,
+  /** 节点列表，一行一个：`名称 起~止 约`。 */
+  milestonesText: DEFAULT_MILESTONES_TEXT,
   subjects: [
     { id: 's631', label: '631 公共管理' },
     { id: 's864', label: '864' },
@@ -416,6 +490,20 @@ export function updateSettings(state, patch) {
     }
   }
   if (p.injectPrompt !== undefined) next.injectPrompt = !!p.injectPrompt
+  for (const k of ['goalLabel', 'goalNote']) {
+    if (p[k] !== undefined) next[k] = String(p[k]).trim().slice(0, 40)
+  }
+  for (const k of ['goalDate', 'goalEnd']) {
+    if (p[k] !== undefined) {
+      const v = String(p[k]).trim()
+      if (!v) next[k] = ''
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(parseDayKey(v))) next[k] = v
+    }
+  }
+  if (p.milestonesText !== undefined) {
+    // 存原文，不做「解析失败就丢弃」：解析时坏行会被跳过，用户能看到自己写了什么
+    next.milestonesText = String(p.milestonesText).replace(/\r\n/g, '\n').slice(0, 2000)
+  }
   if (Array.isArray(p.subjects)) {
     const list = p.subjects
       .map((s) => (typeof s === 'string' ? { id: s, label: s } : s))
@@ -765,8 +853,7 @@ export function summary(state, now = Date.now()) {
   const todayKey = dayKey(now)
   const queue = dueQueue(state, now)
   return {
-    exam: EXAM,
-    daysToExam: daysUntil(EXAM.start, now),
+    goal: goalInfo(state, now),
     today: { date: todayKey, minutes: todayMinutes(state, now), goal: state.settings.dailyGoalMin },
     streak: streak(state, now),
     counts: { todo: cols.todo.length, doing: cols.doing.length, done: cols.done.length },

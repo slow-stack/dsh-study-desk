@@ -167,13 +167,13 @@ check('GET 返回 200', () => assert.equal(res.code, 200))
 check('GET 返回合法 JSON', () => { JSON.parse(res.body) })
 const payload = JSON.parse(res.body)
 check('GET 带 state.settings', () => assert.equal(typeof payload.state.settings.focusMin, 'number'))
-check('GET 带 exam 与 deskFile', () => {
-  assert.equal(payload.exam.start, '2026-12-19')
+check('GET 带 goal 与 deskFile', () => {
+  assert.equal(payload.goal.date, '2026-12-19')
   assert.ok(String(payload.deskFile).includes('desk.json'))
 })
-check('GET 带 daysToExam（数字，不是 undefined）', () => {
-  assert.equal(typeof payload.daysToExam, 'number')
-  assert.ok(Number.isFinite(payload.daysToExam))
+check('GET 带 goal.days（数字，不是 undefined）', () => {
+  assert.equal(typeof payload.goal.days, 'number')
+  assert.ok(Number.isFinite(payload.goal.days))
 })
 
 console.log('[host] /api 路由 POST')
@@ -238,7 +238,7 @@ check('快照带派生字段（review/due/tags/weekly/journal/markdownFile）', 
 const p8 = await post({ op: 'journal.set', text: '来自探针的复盘' })
 check('POST journal.set 200', () => assert.equal(JSON.parse(p8.body).result.text, '来自探针的复盘'))
 const p9 = await post({ op: 'markdown.export' })
-check('POST markdown.export 返回正文', () => assert.match(JSON.parse(p9.body).result.markdown, /# 考研工作台/))
+check('POST markdown.export 返回正文', () => assert.match(JSON.parse(p9.body).result.markdown, /# 学习工作台/))
 check('markdown.export 落了盘', () => {
   const md = readFileSync(join(PROBE_HOME, 'study-desk', 'desk.md'), 'utf8')
   assert.ok(md.includes('POST 加的卡'))
@@ -325,7 +325,7 @@ globalThis.fetch = async () => ({
     weekly: { weeks: [], goalWeekly: 1260 },
     journal: [],
     markdownFile: 'desk.md',
-    exam: { name: 'x', start: '2026-12-19', end: '2026-12-20', note: '' },
+    goal: { label: 'x', date: '2026-12-19', end: '2026-12-20', note: '', days: 71, milestones: [] },
     milestones: [],
     deskFile: 'x',
     version: '0.1.0',

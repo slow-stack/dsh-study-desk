@@ -1,5 +1,5 @@
 /**
- * dsh-study-desk —— 考研工作台（Host 半边）
+ * dsh-study-desk —— 学习工作台（Host 半边）
  *
  * 三块能力，一个插件：
  *   1. 待办墙：Notion 式三列（待办 / 进行中 / 已完成），卡片带科目、标签与投入时长。
@@ -21,10 +21,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
-  EXAM,
   GRADE_LABEL,
   GRADES,
-  MILESTONES,
   STATUSES,
   addTask,
   allTags,
@@ -33,11 +31,13 @@ import {
   deskDir,
   deskFile,
   dueQueue,
+  goalInfo,
   gradeTask,
   heatmap,
   journalRecent,
   logSession,
   minutesByTask,
+  nextMilestone,
   readDesk,
   removeTask,
   reorderTask,
@@ -224,9 +224,7 @@ function snapshot(state) {
     tags: allTags(state),
     weekly: weeklyReport(state, 8, now),
     journal: journalRecent(state, now, 14),
-    exam: EXAM,
-    daysToExam: daysUntil(EXAM.start, now),
-    milestones: MILESTONES,
+    goal: goalInfo(state, now),
     deskFile: deskFile(),
     markdownFile: markdownFile(),
     version: pluginVersion,
@@ -273,7 +271,7 @@ function exportMarkdown(state) {
     minutesByTask: minutesByTask(state),
     reviewStats: reviewStats(state, now),
     weekly: weeklyReport(state, 8, now),
-    daysToExam: daysUntil(EXAM.start, now),
+    goal: goalInfo(state, now),
   })
   mkdirSync(deskDir(), { recursive: true })
   writeFileSync(markdownFile(), text)
@@ -369,22 +367,19 @@ function fmtMinutes(min) {
   return m ? `${h} 小时 ${m} 分钟` : `${h} 小时`
 }
 
-function nextMilestone(now) {
-  for (const m of MILESTONES) {
-    const d = daysUntil(m.start, now)
-    if (d !== null && d >= 0) return { ...m, days: d }
-  }
-  return null
-}
-
 function boardText(state) {
   const s = summary(state)
   const lines = []
-  const days = s.daysToExam
-  lines.push(`考研工作台（study_desk 工具可读写；整页看板在左侧栏「工作台」图标）：`)
-  lines.push(`- 距 ${EXAM.name}（${EXAM.start}）还有 ${days} 天${EXAM.note ? `，考 ${EXAM.note}` : ''}`)
-  const ms = nextMilestone(s.today ? Date.now() : Date.now())
-  if (ms) lines.push(`- 最近节点：${ms.label} ${ms.start}${ms.end && ms.end !== ms.start ? '~' + ms.end : ''}（${ms.days === 0 ? '就是今天' : '还有 ' + ms.days + ' 天'}）`)
+  const goal = s.goal
+  lines.push(`学习工作台（study_desk 工具可读写；整页看板在左侧栏「学习工作台」图标）：`)
+  if (goal.date && goal.days !== null) {
+    const span = goal.end && goal.end !== goal.date ? `（${goal.date}~${goal.end}）` : `（${goal.date}）`
+    const wording = goal.days > 0 ? `距 ${goal.label || '目标日期'}${span}还有 ${goal.days} 天`
+      : goal.days === 0 ? `${goal.label || '目标'}${span}就是今天` : `${goal.label || '目标'}${span}已过 ${-goal.days} 天`
+    lines.push(`- ${wording}${goal.note ? `，${goal.note}` : ''}`)
+  }
+  const ms = nextMilestone(state)
+  if (ms) lines.push(`- 最近节点：${ms.label} ${ms.start}${ms.end !== ms.start ? '~' + ms.end : ''}（${ms.text}${ms.approx ? '，日期按往年惯例估' : ''}）`)
   lines.push(`- 今日专注 ${fmtMinutes(s.today.minutes)} / 目标 ${fmtMinutes(s.today.goal)}，连续打卡 ${s.streak} 天`)
   if (s.doing.length) {
     lines.push('- 进行中 ' + s.counts.doing + '：' + s.doing.map((t) => `${t.title}${t.minutes ? `（已投入 ${fmtMinutes(t.minutes)}）` : ''}`).join(' ｜ '))
@@ -470,10 +465,10 @@ function makeTool() {
   return defineTool({
     name: 'study_desk',
     description:
-      '考研工作台：读写用户的待办墙（待办/进行中/已完成三列）、记录专注时长、查统计与热力图、起停番茄钟、'
+      '学习工作台：读写用户的待办墙（待办/进行中/已完成三列）、记录专注时长、查统计与热力图、起停番茄钟、'
       + '管间隔重复复习队列、写每日复盘、出周报。用户说「今天要做什么」「把 X 加到进行中」「这件做完了」'
       + '"我今天学了多久""开始 25 分钟专注""今天该复习什么""这个我忘了/记住了""帮我记一下今天的复盘""最近几周学得怎么样"'
-      + '这类话时用它，而不是自己另开一份待办清单。action 取值：'
+      + '这类话时用它，而不是自己另开一份待办清单。倒计时的目标与节点由用户在设置页自己填（考试、答辩、投稿都可以）。action 取值：'
       + 'board=看当前看板全貌；add=新建卡；move=卡片换列/排序；update=改卡片字段；remove=删卡；'
       + 'focus=起停番茄钟（给 off=true 或 minutes 控制）；stats=查最近 N 天统计；'
       + 'review=看今日复习队列（带 id/title + grade 时改为打分）；journal=看最近复盘（带 text 时写入）；'

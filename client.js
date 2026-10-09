@@ -1,5 +1,5 @@
 /**
- * dsh-study-desk —— 考研工作台（Client 半边）
+ * dsh-study-desk —— 学习工作台（Client 半边）
  *
  * 以 dsh.client bundle 格式加载（跟 dsh-sticker / dsh-meme 同一套 ModuleLoader 机制，
  * 不需要打包器）。注册 id 必须等于 loader entry 名（dsh-study-desk），否则 ModuleLoader
@@ -13,7 +13,7 @@
  *   sidebar.panellist  → 左侧栏图标（id 与 main 的 key 同名，侧栏自动 dispatch）
  *   main (keyed)       → 整页工作台
  *   shell.overlay      → 右下角常驻迷你计时条（跨面板存活）
- *   settings.section   → 「考研工作台」设置页
+ *   settings.section   → 「学习工作台」设置页
  */
 
 window.__ModuleLoader__.load({
@@ -46,14 +46,6 @@ window.__ModuleLoader__.load({
     const API = '/api/dsh-study-desk'
     const PANEL_ID = 'study-desk'
     const MINI_POS_KEY = 'dsh-study-desk:mini-pos'
-
-    const EXAM = { name: '2027 届考研初试', start: '2026-12-19', end: '2026-12-20', note: '631 公共管理 + 864' }
-    const MILESTONES = [
-      { id: 'pre-reg', label: '预报名', start: '2026-10-09', end: '2026-10-12' },
-      { id: 'reg', label: '正式报名', start: '2026-10-15', end: '2026-10-24' },
-      { id: 'confirm', label: '网上确认', start: '2026-11-01', end: '2026-11-05', approx: true },
-      { id: 'ticket', label: '打印准考证', start: '2026-12-10', end: '2026-12-19', approx: true },
-    ]
 
     const STATUS_META = [
       { id: 'todo', label: '待办', latin: 'TODO' },
@@ -149,8 +141,7 @@ window.__ModuleLoader__.load({
       weekly: { weeks: [], goalWeekly: 0 },
       journalLog: [],
       markdownFile: '',
-      exam: EXAM,
-      milestones: MILESTONES,
+      goal: { label: '', date: '', end: '', note: '', days: null, milestones: [] },
       deskFile: '',
       version: '',
       listeners: new Set(),
@@ -181,8 +172,7 @@ window.__ModuleLoader__.load({
         this.weekly = json.weekly || this.weekly
         this.journalLog = json.journal || []
         this.markdownFile = json.markdownFile || ''
-        this.exam = json.exam || EXAM
-        this.milestones = json.milestones || MILESTONES
+        this.goal = json.goal || this.goal
         this.deskFile = json.deskFile || ''
         this.version = json.version || ''
         this.ready = true
@@ -423,58 +413,43 @@ window.__ModuleLoader__.load({
     // 顶部：标题 / 倒计时 / 节点 / 今日进度
     // -----------------------------------------------------------------------
 
-    function milestoneChips(now) {
-      const out = []
-      for (const m of MILESTONES) {
-        const toStart = daysUntil(m.start, now)
-        const toEnd = daysUntil(m.end, now)
-        if (toStart === null || toEnd === null) continue
-        if (toEnd < -3) continue
-        if (toStart > 45) continue
-        let tone = 'future'
-        let text = `${toStart} 天后`
-        if (toStart === 0) { tone = 'now'; text = toEnd === 0 ? '就是今天' : `进行中 · 今天最后一天` }
-        else if (toStart < 0 && toEnd >= 0) { tone = 'now'; text = `进行中 · 还剩 ${toEnd + 1} 天` }
-        else if (toEnd < 0) { tone = 'past'; text = '已结束' }
-        else if (toStart === 1) { text = '明天开始' }
-        out.push({ ...m, tone, text, toStart, toEnd })
-      }
-      return out
-    }
-
     function Head({ now }) {
       const s = useStore()
-      const toExam = daysUntil(s.exam.start, now)
-      const goal = Number(s.state.settings.dailyGoalMin) || 180
-      const pct = goal > 0 ? Math.round((s.todayMinutes / goal) * 100) : 0
-      const chips = milestoneChips(now)
+      const goal = s.goal || {}
+      const days = typeof goal.days === 'number' ? goal.days : null
+      const daily = Number(s.state.settings.dailyGoalMin) || 180
+      const pct = daily > 0 ? Math.round((s.todayMinutes / daily) * 100) : 0
+      // 节点的语气与文案由 desk.js 算好；这里只决定摆哪些（太远的和早就结束的别占地方）
+      const chips = (goal.milestones || []).filter((m) => m.toEnd >= -3 && m.toStart <= 45)
+      const subtitle = [goal.note, goal.date
+        ? `${goal.label || '目标'} ${goal.date}${goal.end && goal.end !== goal.date ? ' ~ ' + goal.end : ''}`
+        : ''].filter(Boolean).join(' · ')
       return h('header', { className: 'sd-head' }, [
         h('div', { className: 'sd-head-row', key: 'title' }, [
           h('div', { className: 'sd-head-main', key: 'l' }, [
-            h('h1', { className: 'sd-title', key: 't' }, '考研工作台'),
-            h('div', { className: 'sd-subtitle', key: 's' },
-              `${s.exam.note || ''}${s.exam.note ? ' · ' : ''}初试 ${s.exam.start}${s.exam.end && s.exam.end !== s.exam.start ? ' ~ ' + s.exam.end : ''}`),
+            h('h1', { className: 'sd-title', key: 't' }, '学习工作台'),
+            subtitle ? h('div', { className: 'sd-subtitle', key: 's' }, subtitle) : null,
           ]),
-          h('div', { className: 'sd-count', key: 'r' }, [
-            h('span', { className: 'sd-count-num', key: 'n' }, toExam === null ? '—' : String(Math.max(0, toExam))),
+          goal.date ? h('div', { className: 'sd-count', key: 'r' }, [
+            h('span', { className: 'sd-count-num', key: 'n' }, days === null ? '—' : String(Math.max(0, days))),
             h('span', { className: 'sd-count-cap', key: 'c' }, '天'),
-            h('span', { className: 'sd-count-label', key: 'l' }, toExam !== null && toExam >= 0 ? '距初试' : '初试已过'),
-          ]),
+            h('span', { className: 'sd-count-label', key: 'l' }, (days !== null && days < 0 ? '已过 · ' : '距 · ') + (goal.label || '目标')),
+          ]) : null,
         ]),
         chips.length
           ? h('div', { className: 'sd-chips', key: 'chips' }, chips.map((c) =>
             h('span', { className: 'sd-chip sd-chip-' + c.tone, key: c.id, title: `${c.label} ${c.start}${c.end !== c.start ? ' ~ ' + c.end : ''}` }, [
               h('b', { key: 'a' }, c.label),
               h('span', { key: 'b' }, c.text),
-              c.approx ? h('i', { key: 'c', className: 'sd-chip-approx', title: '日期为往年惯例，以官方公告为准' }, '约') : null,
+              c.approx ? h('i', { key: 'c', className: 'sd-chip-approx', title: '这个日期是估的，以官方通知为准' }, '约') : null,
             ])))
           : null,
         h('div', { className: 'sd-head-row sd-head-row-end', key: 'today' }, [
           h('div', { className: 'sd-today', key: 't' }, [
             h('span', { className: 'sd-today-cap', key: 'c' }, '今日专注'),
             h('span', { className: 'sd-today-num', key: 'n' }, fmtMinutes(s.todayMinutes)),
-            h('span', { className: 'sd-today-goal', key: 'g' }, `/ ${fmtMinutes(goal)} · ${pct}%`),
-            h('div', { className: 'sd-today-bar', key: 'b' }, h(Progress, { value: s.todayMinutes, max: goal })),
+            h('span', { className: 'sd-today-goal', key: 'g' }, `/ ${fmtMinutes(daily)} · ${pct}%`),
+            h('div', { className: 'sd-today-bar', key: 'b' }, h(Progress, { value: s.todayMinutes, max: daily })),
           ]),
           h('div', { className: 'sd-today sd-today-streak', key: 's' }, [
             h('span', { className: 'sd-today-cap', key: 'c' }, '连续打卡'),
@@ -1511,6 +1486,42 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    /** 文本版 NumField：失焦或回车才写回，边打字边存会打爆接口。 */
+    function TextField({ label, hint, value, placeholder, onCommit }) {
+      const [draft, setDraft] = React.useState(value || '')
+      React.useEffect(() => setDraft(value || ''), [value])
+      const commit = () => { if (draft !== (value || '')) onCommit(draft.trim()) }
+      return h('label', { className: 'sd-field' }, [
+        h('span', { className: 'sd-field-label', key: 'l' }, label),
+        h('input', {
+          key: 'i', className: 'sd-input wide', type: 'text', value: draft, placeholder,
+          onChange: (e) => setDraft(e.target.value), onBlur: commit,
+          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } },
+        }),
+        hint ? h('span', { className: 'sd-field-hint', key: 'h' }, hint) : null,
+      ])
+    }
+
+    function TextAreaField({ label, hint, value, rows, placeholder, onCommit }) {
+      const [draft, setDraft] = React.useState(value || '')
+      React.useEffect(() => setDraft(value || ''), [value])
+      const dirty = draft !== (value || '')
+      return h('div', { className: 'sd-field' }, [
+        h('span', { className: 'sd-field-label', key: 'l' }, label),
+        h('textarea', {
+          key: 't', className: 'sd-journal-input', rows: rows || 4, value: draft, placeholder,
+          onChange: (e) => setDraft(e.target.value),
+        }),
+        h('div', { className: 'sd-row', key: 'r' }, [
+          h('button', {
+            className: 'sd-textbtn', disabled: !dirty,
+            onClick: () => onCommit(draft.replace(/\r\n/g, '\n')),
+          }, dirty ? '保存节点' : '已保存'),
+          hint ? h('span', { className: 'sd-field-hint', key: 'h' }, hint) : null,
+        ]),
+      ])
+    }
+
     function Settings() {
       const s = useStore()
       usePoll(60000)
@@ -1518,7 +1529,18 @@ window.__ModuleLoader__.load({
       const patch = (p) => store.apply('settings.update', { patch: p })
       return h('div', { className: 'sd-settings' }, [
         h('p', { className: 'sd-settings-note', key: 'n' },
-          '考研工作台：待办墙 + 间隔重复复习队列 + 学习热力图与周报 + 番茄钟 + 每日复盘。数据只存在本机，不联网。'),
+          '学习工作台：待办墙 + 间隔重复复习队列 + 学习热力图与周报 + 番茄钟 + 每日复盘。数据只存在本机，不联网。'),
+        h('div', { className: 'sd-settings-grid', key: 'goalgrid' }, [
+          h(TextField, { key: 'gl', label: '目标名称', placeholder: '如 2027 届考研初试 / 博士答辩 / 期刊投稿', value: st.goalLabel || '', onCommit: (v) => patch({ goalLabel: v }) }),
+          h(TextField, { key: 'gd', label: '目标日期', hint: '留空就不显示右上角的倒计时', value: st.goalDate || '', placeholder: 'YYYY-MM-DD', onCommit: (v) => patch({ goalDate: v }) }),
+          h(TextField, { key: 'ge', label: '结束日期（可选）', hint: '跨多天的考试或答辩才填', value: st.goalEnd || '', placeholder: 'YYYY-MM-DD', onCommit: (v) => patch({ goalEnd: v }) }),
+          h(TextField, { key: 'gn', label: '备注', placeholder: '如 631 公共管理 + 864', value: st.goalNote || '', onCommit: (v) => patch({ goalNote: v }) }),
+        ]),
+        h(TextAreaField, {
+          key: 'ms', label: '节点（一行一个）', rows: 5,
+          hint: '格式：名称 2026-10-15~2026-10-24；日期拿不准就在行尾加「约」。坏行会被忽略，不会报错。',
+          value: st.milestonesText || '', onCommit: (v) => patch({ milestonesText: v }),
+        }),
         h('div', { className: 'sd-settings-grid', key: 'g' }, [
           h(NumField, { key: 'goal', label: '每日目标（分钟）', value: st.dailyGoalMin || 180, min: 10, max: 1440, onCommit: (v) => patch({ dailyGoalMin: v }) }),
           h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 180, onCommit: (v) => patch({ focusMin: v }) }),
@@ -1617,6 +1639,7 @@ window.__ModuleLoader__.load({
       '.sd-select.sm{font-size:11.5px}',
       '.sd-input{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:7px;padding:4px 9px;font-size:13px;width:88px;outline:none}',
       '.sd-input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.sd-input.wide{width:100%;min-width:0}',
       // 分区标题
       '.sd-section-title{display:flex;align-items:baseline;gap:10px;font-size:12px;letter-spacing:.1em;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-l1);padding-bottom:7px}',
       '.sd-section-hint{letter-spacing:0;font-size:11px;color:var(--dsw-alias-label-dimmed);margin-left:auto}',
@@ -1870,7 +1893,7 @@ window.__ModuleLoader__.load({
 
       // 左侧栏图标：id 与 main 的 key 同名，侧栏点它就会 dispatch 到 main 的同一格
       register('sidebar.panellist',
-        { name: 'sidebar.panellist', id: PANEL_ID, order: 40, label: '考研工作台' },
+        { name: 'sidebar.panellist', id: PANEL_ID, order: 40, label: '学习工作台' },
         (props) => h(Icon, { name: 'board', size: (props && props.size) || 18 }),
         'sidebar.panellist')
 
@@ -1888,7 +1911,7 @@ window.__ModuleLoader__.load({
 
       // 设置页
       register('settings.section',
-        { name: 'settings.section', id: 'study-desk', order: 27, label: '考研工作台' },
+        { name: 'settings.section', id: 'study-desk', order: 27, label: '学习工作台' },
         () => h(Settings, { key: 'settings' }),
         'settings.section')
 
