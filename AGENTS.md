@@ -25,13 +25,14 @@
 | `markdown.js` | Markdown 导出 / 读回（纯函数）：`toMarkdown` 生成 Obsidian 友好的 `desk.md`，`fromMarkdown` + `mergeMarkdown` 按 id 合并读回。机器字段放在行尾 `<!-- desk:… -->` 注释里。 |
 | `bbdc.js` | **不背单词打卡桥**（纯数据层，零依赖）：从腾讯 Androws 虚拟磁盘里的 App 数据读打卡/时长/词书，再用 App WebView 缓存里挖到的 `sid` 打 `learnywhere.cn` 的统计接口补累计词数。**只读**，不回写 App。`bbdcView()` 把采集结果裁成面板要看的紧凑形状（挡住 sid 摘要与临时目录）；`readBbdc()` 带 10 分钟缓存 + 并发去重。 |
 | `timer.js` | 番茄钟状态机：`start/pause/resume/reset/complete/reconcile`。真相是绝对时间戳，不用「还剩多少毫秒」。 |
-| `index.js` | **宿主半边**：`study_desk` 工具（10 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要。派生数据（复习队列/统计/周报/标签）一律由 desk.js 算好再随快照发出。 |
-| `client.js` | **客户端半边**：整页看板（复习队列 / 过滤栏 / 热力图 / 周报 / 复盘）+ 设置页 + 迷你条，注册 4 个槽位。 |
+| `index.js` | **宿主半边**：`study_desk` 工具（11 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要。派生数据（复习队列（每张带 `curve`）/统计/`forecast` 七日预报/`plan` 今日建议/周报/标签/单词打卡）一律由 `desk.js` / `bbdc.js` 算好再随快照发出。 |
+| `client.js` | **客户端半边**：整页看板（复习队列 / 过滤栏 / 热力图 / 周报 / 复盘）+ 独立的「单词打卡」面板 + 设置页 + 迷你条，注册 6 个槽位（2 个侧栏入口 + 2 个 main + 1 个迷你条 + 1 个设置节）。 |
 | `cordis.patch.yml` | 让宿主把本插件 insert 进 loader 树。 |
 | `package.json` | `dsh.bundle.patch` 指向上面那个 patch；`dsh.client` 声明客户端半边与注入的运行时包。 |
-| `test/desk.test.js` | 16 个单测，`node --test`。 |
+| `test/desk.test.js` | 30 个单测，`node --test`。 |
 | `test/markdown.test.js` | 4 个单测：导出→读回往返、手写 Markdown 读回、id 命中即更新。 |
 | `test/bbdc.test.js` | 11 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体等。 |
+| `test/mini-dock.test.js` | 3 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除。 |
 | `apply-probe.mjs` | 离线冒烟：用 stub ctx 把两侧 `apply()` 真跑一遍，不启动 DSH 就能抓加载期错误。 |
 | `install.mjs` | 把自己的路径写进某个 profile 的 `package.json`，跑 pnpm，并维护 patch 里的入口 URL。 |
 
@@ -154,8 +155,8 @@ ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk
 ## 测试
 
 ```bash
-node --test             # 20 个单测：数据层 + 番茄钟状态机 + 复习排期 + Markdown 往返
-node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op
+node --test             # 48 个单测：数据层 + 番茄钟状态机 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析
+node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op / 快照新字段
 node install.mjs --check  # 体检：本目录与某个 profile 的接线是否完整
 ```
 
@@ -173,6 +174,16 @@ node install.mjs --check  # 体检：本目录与某个 profile 的接线是否�
 再用真 `MouseEvent('click')` 点一遍按钮、断言 POST 出去的 op。
 暗色只要给 `<body>` 加 `data-ds-dark-theme`（注意：暗色标记在 **body** 上，不是 html）。
 无头 Edge 出图与结果：`msedge --headless=new --dump-dom`（把断言写进一个屏外 `<pre>`）+ `--screenshot`。
+
+**更省事的一档：`exports.__test`。** `client.js` 末尾把几个组件连同 `store` 一起挂了出来
+（`MemoryCurve / Forecast / PlanStrip / ReviewQueue / store`），所以可以不起浏览器：
+`new Function('require','module','exports', code)` 在真全局里加载 bundle
+（预置 `globalThis.window.__ModuleLoader__.load` 接住 factory，再补 `document / fetch / navigator /
+localStorage / requestAnimationFrame / ResizeObserver / matchMedia` 几个桩），
+`store.absorb(一份与宿主 `snapshot()` 同形状的快照)` 之后用 `react-dom/server` 的
+`renderToStaticMarkup` 直接把组件渲成 HTML 断言。改组件时用它最快，
+**但它渲不出布局与点击**（宿主外壳的 `overflow:hidden`、层叠上下文那些坑照样得过真挂载那一关）。
+真 React 得自带：宿主的 `app.asar` 里没有 `react`（只有 `fast-deep-equal` 的同名文件）。
 
 ## 安装到别的 profile
 

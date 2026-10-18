@@ -22,6 +22,7 @@ import {
   reviewStats,
   scheduleTask,
   setJournal,
+  unscheduleTask,
   streak,
   subjectBreakdown,
   summary,
@@ -29,7 +30,7 @@ import {
   updateSettings,
   weeklyReport,
 } from '../desk.js'
-import { completeTimer, makeTimer, pauseTimer, reconcileTimer, remainingMs, startTimer } from '../timer.js'
+import { completeTimer, makeTimer, pauseTimer, reconcileTimer, remainingMs, resetTimer, startTimer } from '../timer.js'
 
 const T0 = new Date(2026, 9, 8, 12, 0, 0).getTime() // 2026-10-08 12:00 本地
 const MIN = 60000
@@ -531,3 +532,34 @@ test('起钟命名优先级：手写名 > 卡标题 > 兜底桶名；break 不�
   assert.equal(t5.title.length, 24)
 })
 
+test('复习开关只撤排期，难度与遍数不被清零', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '864 论述练习', subject: '864', review: true })
+  gradeTask(s, a.id, 'good', T0)
+  gradeTask(s, a.id, 'good', T0 + 3 * 24 * 60 * MIN)
+  const before = { ...a.review }
+  assert.ok(before.reps >= 2, '先确认已经复习过')
+  unscheduleTask(s, a.id, T0 + 4 * 24 * 60 * MIN)
+  assert.equal(a.review.due, null, '排期应该被撤掉')
+  assert.equal(a.review.reps, before.reps, '遍数不该清零')
+  assert.equal(a.review.ease, before.ease, '难度不该清零')
+  scheduleTask(s, a.id, '2026-11-01', T0 + 5 * 24 * 60 * MIN)
+  assert.equal(a.review.due, '2026-11-01')
+  assert.equal(a.review.reps, before.reps, '重新拉回循环后遍数仍然保留')
+  assert.equal(a.review.ease, before.ease, '重新拉回循环后难度仍然保留')
+})
+
+test('「结束这一段」按真实时长记账，「放弃」不记账', () => {
+  const done = normalize(null)
+  startTimer(done, { minutes: 25, kind: 'focus', title: '631 公共管理 · 今日复习' }, T0)
+  completeTimer(done, T0 + 20 * MIN)
+  assert.equal(done.sessions.length, 1, '结束应该记一条 session')
+  assert.equal(done.sessions[0].minutes, 20, '记的应该是真跑过的 20 分钟，不是 25')
+  assert.equal(done.sessions[0].title, '631 公共管理 · 今日复习')
+  assert.equal(done.timer.kind, 'break', '结束之后进休息')
+
+  const dropped = normalize(null)
+  startTimer(dropped, { minutes: 25, kind: 'focus', title: 'x' }, T0)
+  resetTimer(dropped)
+  assert.equal(dropped.sessions.length, 0, '放弃不该记账')
+})

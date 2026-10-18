@@ -641,7 +641,7 @@ window.__ModuleLoader__.load({
           ]),
           h('div', { className: 'sd-timer-side', key: 's' }, [
             timer ? h('button', {
-              className: 'sd-iconbtn', title: '结束这一段', onClick: () => store.apply('timer.reset'),
+              className: 'sd-iconbtn', title: '结束这一段（按实际时长记账）', onClick: () => store.apply('timer.complete'),
             }, h(Icon, { name: 'stop' })) : null,
             timer && isFocus && !timer.running ? h('button', {
               className: 'sd-textbtn', title: '跳过这一段', onClick: () => store.apply('timer.reset'),
@@ -1059,13 +1059,78 @@ window.__ModuleLoader__.load({
 
     let dragId = null
 
-    function Card({ task, minutes, confirmId, setConfirmId, onMove, onDelete, dragging, setDragging, onToggleReview, onPickTag, activeTags }) {
+    function Card({ task, minutes, confirmId, setConfirmId, onMove, onDelete, onUpdate, dragging, setDragging, onToggleReview, onPickTag, activeTags }) {
       const spent = minutes[task.id] || 0
       const confirming = confirmId === task.id
+      const [editing, setEditing] = React.useState(false)
+      const [draft, setDraft] = React.useState(null)
       const review = task.review || {}
       const scheduled = !!review.due
       const late = scheduled && daysUntil(review.due, Date.now()) <= 0
       const tags = task.tags || []
+
+      // 内联编辑：只改卡自己的字段，排期与时长一概不碰（删卡重建会把复习历史和投入一起清零）
+      const beginEdit = () => {
+        setDraft({
+          title: task.title || '',
+          note: task.note || '',
+          subject: task.subject || '',
+          estimateMin: task.estimateMin || 0,
+        })
+        setEditing(true)
+      }
+      const commitEdit = () => {
+        if (!draft) { setEditing(false); return }
+        const patch = {}
+        const title = draft.title.trim()
+        if (title && title !== task.title) patch.title = title
+        if (draft.note !== (task.note || '')) patch.note = draft.note
+        if (draft.subject !== (task.subject || '')) patch.subject = draft.subject
+        const est = Math.max(0, Math.floor(Number(draft.estimateMin) || 0))
+        if (est !== (task.estimateMin || 0)) patch.estimateMin = est
+        setEditing(false)
+        setDraft(null)
+        if (Object.keys(patch).length) onUpdate && onUpdate(task.id, patch)
+      }
+
+      if (editing) {
+        const field = (key, label, extra) => h('label', { className: 'sd-edit-row', key }, [
+          h('span', { className: 'sd-edit-label', key: 'l' }, label),
+          h('input', Object.assign({
+            key: 'i',
+            className: 'sd-edit-input',
+            value: draft[key],
+            onChange: (e) => setDraft((d) => ({ ...d, [key]: e.target.value })),
+          }, extra || {})),
+        ])
+        return h('article', {
+          className: 'sd-card editing' + (task.status === 'done' ? ' done' : ''),
+          draggable: false,
+        }, [
+          h('div', { className: 'sd-edit', key: 'e' }, [
+            field('title', '标题', { autoFocus: true }),
+            field('subject', '科目'),
+            field('estimateMin', '预计分钟', { type: 'number', min: 0 }),
+            h('label', { className: 'sd-edit-row', key: 'note' }, [
+              h('span', { className: 'sd-edit-label', key: 'l' }, '备注'),
+              h('textarea', {
+                key: 'i',
+                className: 'sd-edit-input',
+                rows: 2,
+                value: draft.note,
+                onChange: (e) => setDraft((d) => ({ ...d, note: e.target.value })),
+              }),
+            ]),
+          ]),
+          h('div', { className: 'sd-card-foot', key: 'f' }, [
+            h('span', { className: 'sd-card-acts', key: 'a' }, [
+              h('button', { key: 'ok', className: 'sd-act', title: '保存修改', onClick: commitEdit }, '保存'),
+              h('button', { key: 'no', className: 'sd-act', title: '放弃修改', onClick: () => { setEditing(false); setDraft(null) } }, '取消'),
+            ]),
+          ]),
+        ])
+      }
+
       return h('article', {
         className: 'sd-card' + (task.status === 'done' ? ' done' : '') + (dragging ? ' dragging' : '') + (late ? ' due' : ''),
         draggable: true,
@@ -1119,6 +1184,9 @@ window.__ModuleLoader__.load({
                 key: 'r2', className: 'sd-act', title: '放回进行中',
                 onClick: () => onMove(task.id, 'doing', null),
               }, h(Icon, { name: 'right', size: 13 })) : null,
+              h('button', {
+                key: 'edit', className: 'sd-act', title: '改标题 / 科目 / 预计时长 / 备注', onClick: beginEdit,
+              }, h(Icon, { name: 'pen', size: 13 })),
               h('button', {
                 key: 'rev', className: 'sd-act', title: scheduled ? '移出复习循环' : '拉进间隔重复复习循环',
                 onClick: () => onToggleReview && onToggleReview(task.id, !scheduled),
@@ -1188,7 +1256,7 @@ window.__ModuleLoader__.load({
       ])
     }
 
-    function Column({ meta, tasks, total, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onAdd, onToggleReview, onPickTag, activeTags, filtered }) {
+    function Column({ meta, tasks, total, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onUpdate, onAdd, onToggleReview, onPickTag, activeTags, filtered }) {
       return h('section', {
         className: 'sd-col' + (hover === meta.id ? ' hover' : ''),
         onDragOver: (e) => { e.preventDefault(); setHover(meta.id) },
@@ -1219,6 +1287,8 @@ window.__ModuleLoader__.load({
               if (isHover) return
               onMove(id, status, before)
             },
+            onDelete,
+            onUpdate,
             onToggleReview,
             onPickTag,
             activeTags,
@@ -1243,6 +1313,7 @@ window.__ModuleLoader__.load({
 
       const move = (id, status, beforeId) => store.apply('task.move', { id, status, beforeId: beforeId || undefined })
       const del = (id) => store.apply('task.delete', { id })
+      const update = (id, patch) => store.apply('task.update', { id, patch })
       const add = (payload) => store.apply('task.add', payload)
       const toggleReview = (id, on) => store.apply(on ? 'review.schedule' : 'review.unschedule', { id })
       const pickTag = (tag) => setTags((cur) => (cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag]))
@@ -1320,6 +1391,7 @@ window.__ModuleLoader__.load({
             setDragging,
             onMove: move,
             onDelete: del,
+            onUpdate: update,
             onAdd: add,
             onToggleReview: toggleReview,
             onPickTag: pickTag,
@@ -1796,21 +1868,7 @@ window.__ModuleLoader__.load({
       return { x: Math.min(Math.max(pad, p.x), maxX), y: Math.min(Math.max(pad, p.y), maxY) }
     }
 
-    // 松手吸附：横向永远贴最近的一边，纵向离上下边太近就吸到边
-    function snapMiniPos(p, w, h) {
-      const pad = 12
-      const edge = 48
-      const vw = window.innerWidth || 0
-      const vh = window.innerHeight || 0
-      const width = w || 0
-      const height = h || 0
-      const x = (p.x + width / 2) < vw / 2 ? pad : Math.max(pad, vw - width - pad)
-      const maxY = Math.max(pad, vh - height - pad)
-      let y = Math.min(Math.max(pad, p.y), maxY)
-      if (Math.abs(y - pad) <= edge) y = pad
-      else if (Math.abs(maxY - y) <= edge) y = maxY
-      return { x, y }
-    }
+    // 松手不再吸附：拖到哪就停在哪，只保留 clampMiniPos 防止拖出视口
 
     // 悬浮卡片被谁盖住，在浏览器里根本看不见：拿命中测试结果回传宿主写盘。
     // reportDiag 按 kind+where+message 去重，所以反复探也不会把诊断文件灌爆。
@@ -1839,7 +1897,6 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false)
       const [hidden, setHidden] = React.useState(false)
       const [pos, setPos] = React.useState(readMiniPos)
-      const [snapping, setSnapping] = React.useState(false)
       const dragRef = React.useRef(null)
       const rootRef = React.useRef(null)
       const justDraggedRef = React.useRef(false)
@@ -1866,7 +1923,9 @@ window.__ModuleLoader__.load({
         onPointerMove: (event) => {
           const d = dragRef.current
           if (!d) return
-          // 手抖的几个像素不算拖动，否则在条身上点一下就被吸到边上去了
+          // 键/指针已经抬起却还留着 dragRef（捕获被系统抢走的情况）：直接收尾
+          if (event.buttons === 0) { dragRef.current = null; return }
+          // 手抖的几个像素不算拖动，否则在条身上点一下就被当成拖动
           if (!d.moved && Math.abs(event.clientX - d.sx) + Math.abs(event.clientY - d.sy) < 4) return
           d.moved = true
           setPos(clampMiniPos({ x: event.clientX - d.dx, y: event.clientY - d.dy }, d.w, d.h))
@@ -1880,16 +1939,15 @@ window.__ModuleLoader__.load({
             // 拖完那一下松手别再当成点击（小圆点会被误展开）
             justDraggedRef.current = true
             setTimeout(() => { justDraggedRef.current = false }, 0)
-            // 松手吸附：横向贴最近的一边，纵向离上下边近就吸上去
-            setSnapping(true)
-            setPos((current) => {
-              const next = snapMiniPos(current || readMiniPos() || { x: 18, y: 18 }, d.w, d.h)
-              writeMiniPos(next)
-              return next
-            })
-            setTimeout(() => setSnapping(false), 280)
+            // 松手就停在原地：只做视口钳制（防拖丢），并把落点记住
+            const next = clampMiniPos({ x: event.clientX - d.dx, y: event.clientY - d.dy }, d.w, d.h)
+            setPos(next)
+            writeMiniPos(next)
           }
         },
+        // 拖动中途被系统手势/弹窗抢走指针：清掉拖拽态，免得下次鼠标掠过就把钟拖跑
+        onPointerCancel: () => { dragRef.current = null },
+        onLostPointerCapture: () => { dragRef.current = null },
         onDoubleClick: (event) => {
           // 双击展开/收起按钮也会冒到这里，那种情况下不该把位置清掉
           if (event.target && event.target.closest && event.target.closest('button')) return
@@ -1932,7 +1990,7 @@ window.__ModuleLoader__.load({
       if (hidden) {
         return toTopLayer(h('button', Object.assign({
           ref: rootRef,
-          className: 'sd-mini-fab' + (snapping ? ' snapping' : ''),
+          className: 'sd-mini-fab',
           title: '展开专注计时（可拖动，双击回右下角）',
           onClick: () => { if (!justDraggedRef.current) setHidden(false) },
           style: posStyle,
@@ -1942,7 +2000,7 @@ window.__ModuleLoader__.load({
       const isFocus = !timer || timer.kind === 'focus'
       return toTopLayer(h('div', Object.assign({
         ref: rootRef,
-        className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle') + (snapping ? ' snapping' : ''),
+        className: 'sd-mini' + (open ? ' open' : '') + (timer ? '' : ' idle'),
         style: posStyle,
       }, dragHandlers), [
         h('div', { className: 'sd-mini-main', key: 'm' }, [
@@ -1952,7 +2010,16 @@ window.__ModuleLoader__.load({
             className: 'sd-iconbtn sm',
             title: !timer ? '开始专注' : timer.running ? '暂停' : '继续',
             onClick: () => {
-              if (!timer) store.apply('timer.start', { minutes: s.state.settings.focusMin || 25, kind: 'focus' })
+              if (!timer) {
+                // 悬浮条没有输入框：优先挂到进行中的卡（名字与科目一起带上），
+                // 其次沿用最近一段专注的名字，避免全部落进「专注（未命名）」
+                const doing = tasksIn('doing')[0]
+                const lastSession = (s.state.sessions || []).filter((x) => x.kind === 'focus' && x.title).slice(-1)[0]
+                const base = { minutes: s.state.settings.focusMin || 25, kind: 'focus' }
+                if (doing) base.taskId = doing.id
+                else if (lastSession && lastSession.title) base.title = lastSession.title
+                store.apply('timer.start', base)
+              }
               else if (timer.running) store.apply('timer.pause')
               else store.apply('timer.resume')
             },
@@ -2175,7 +2242,7 @@ window.__ModuleLoader__.load({
       '.sd-name-empty::placeholder{color:var(--dsw-alias-label-dimmed)}',
       '.sd-timer-row{display:flex;align-items:center;gap:14px}',
       '.sd-timer-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}',
-      '.sd-timer-clock{font-size:34px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:.01em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}',
+      '.sd-timer-clock{font-size:clamp(26px,4vw,34px);font-weight:600;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:.01em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}',
       '.sd-timer-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:0}',
       '.sd-phase{padding:1px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px}',
       '.sd-phase-focus{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent)}',
@@ -2255,9 +2322,25 @@ window.__ModuleLoader__.load({
       '.sd-est{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-dimmed)}',
       '.sd-card-acts{margin-left:auto;display:flex;align-items:center;gap:4px;opacity:0;transition:opacity .12s ease}',
       '.sd-card:hover .sd-card-acts,.sd-card:focus-within .sd-card-acts{opacity:1}',
+      // 触屏没有 hover，操作按钮不能永远隐身
+      '@media (hover:none){.sd-card-acts{opacity:1}}',
+      // 迷你条被宿主模态盖住过很多次：抬到弹层之上，并让拖动更跟手
+      '.sd-mini:hover{box-shadow:0 10px 30px rgba(0,0,0,.34)}',
+      '.sd-mini-fab:hover{box-shadow:0 10px 30px rgba(0,0,0,.34)}',
+      // 尊重系统的「减少动态效果」
+      '@media (prefers-reduced-motion:reduce){.sd-mini,.sd-mini-fab,.sd-card-acts,.sd-act{transition:none}}',
+      // 键盘可见焦点
+      '.sd-iconbtn:focus-visible,.sd-act:focus-visible,.sd-pill:focus-visible,.sd-textbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
       '.sd-act{display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;padding:2px 5px;border-radius:5px;font-size:11px;transition:color .12s ease,background .12s ease}',
       '.sd-act:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.sd-act.danger{color:var(--dsw-alias-state-error-primary)}',
+      // 卡片内联编辑
+      '.sd-card.editing{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px;cursor:default}',
+      '.sd-edit{display:flex;flex-direction:column;gap:6px}',
+      '.sd-edit-row{display:flex;align-items:center;gap:8px}',
+      '.sd-edit-label{flex:none;width:4.6em;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.sd-edit-input{flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.5;padding:4px 7px;outline:none;font-family:inherit;resize:vertical}',
+      '.sd-edit-input:focus{border-color:var(--dsw-alias-brand-primary)}',
       '.sd-act.danger:hover{background:var(--dsw-alias-interactive-bg-hover-danger)}',
       // 新建
       '.sd-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:1px dashed var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-tertiary);font-size:12px;padding:7px;border-radius:9px;cursor:pointer;transition:color .12s ease,border-color .12s ease}',
@@ -2407,7 +2490,7 @@ window.__ModuleLoader__.load({
       // 迷你条
       // 迷你条：portal 到 body 后是根层叠上下文里的浮层，所以要自己声明 pointer-events
       // 与 z-index（宿主的模态框 1000、菜单/气泡 1100，我们压在它们下面）。
-      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
+      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;will-change:left,top;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
       '.sd-mini-main{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:grab;touch-action:none;user-select:none}',
       '.sd-mini-main:active{cursor:grabbing}',
       '.sd-mini-grip{flex:none;width:8px;height:14px;opacity:.4;background-image:radial-gradient(currentColor 1px,transparent 1.3px);background-size:4px 4px;background-position:1px 2px;background-repeat:repeat}',
@@ -2419,10 +2502,8 @@ window.__ModuleLoader__.load({
       '.sd-mini-row .sd-mini-cap{flex:none}',
       '.sd-mini-actions{gap:6px}',
       '.sd-mini-late{color:var(--dsw-alias-state-error-primary)}',
-      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
+      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;will-change:left,top;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
-      // 松手吸附时给 left/top 加一段过渡，视觉上「啪」地贴边
-      '.sd-mini.snapping,.sd-mini-fab.snapping{transition:left .22s cubic-bezier(.2,.8,.2,1),top .22s cubic-bezier(.2,.8,.2,1)}',
       '.sd-error{margin:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6}',
       '.sd-error-stack{margin:10px 0 0;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-radius:6px}',
       // 设置
@@ -2580,7 +2661,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = inject
-    exports.__test = { fmtClock, daysUntil, tasksIn, CSS }
+    exports.__test = { clampMiniPos, fmtClock, fmtStamp, daysUntil, tasksIn, CSS, MemoryCurve, Forecast, PlanStrip, ReviewQueue, store, BbdcPanel, monthCells, shiftYm, ymOf }
     return module.exports
   },
 })
