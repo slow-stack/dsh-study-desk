@@ -23,6 +23,7 @@
 | --- | --- |
 | `desk.js` | 纯数据层：读写 `desk.json`、任务增删改排、**间隔重复排期（简化 SM-2）**、**遗忘曲线 / 到期预报 / 今日建议**、标签归一化、日复盘、热力图分档、连续打卡、周报、按科目统计。**不依赖 dsh 运行时，可独立单测。** |
 | `markdown.js` | Markdown 导出 / 读回（纯函数）：`toMarkdown` 生成 Obsidian 友好的 `desk.md`，`fromMarkdown` + `mergeMarkdown` 按 id 合并读回。机器字段放在行尾 `<!-- desk:… -->` 注释里。 |
+| `bbdc.js` | **不背单词打卡桥**（纯数据层，零依赖）：从腾讯 Androws 虚拟磁盘里的 App 数据读打卡/时长/词书，再用 App WebView 缓存里挖到的 `sid` 打 `learnywhere.cn` 的统计接口补累计词数。**只读**，不回写 App。`bbdcView()` 把采集结果裁成面板要看的紧凑形状（挡住 sid 摘要与临时目录）；`readBbdc()` 带 10 分钟缓存 + 并发去重。 |
 | `timer.js` | 番茄钟状态机：`start/pause/resume/reset/complete/reconcile`。真相是绝对时间戳，不用「还剩多少毫秒」。 |
 | `index.js` | **宿主半边**：`study_desk` 工具（10 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要。派生数据（复习队列/统计/周报/标签）一律由 desk.js 算好再随快照发出。 |
 | `client.js` | **客户端半边**：整页看板（复习队列 / 过滤栏 / 热力图 / 周报 / 复盘）+ 设置页 + 迷你条，注册 4 个槽位。 |
@@ -30,6 +31,7 @@
 | `package.json` | `dsh.bundle.patch` 指向上面那个 patch；`dsh.client` 声明客户端半边与注入的运行时包。 |
 | `test/desk.test.js` | 16 个单测，`node --test`。 |
 | `test/markdown.test.js` | 4 个单测：导出→读回往返、手写 Markdown 读回、id 命中即更新。 |
+| `test/bbdc.test.js` | 11 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体等。 |
 | `apply-probe.mjs` | 离线冒烟：用 stub ctx 把两侧 `apply()` 真跑一遍，不启动 DSH 就能抓加载期错误。 |
 | `install.mjs` | 把自己的路径写进某个 profile 的 `package.json`，跑 pnpm，并维护 patch 里的入口 URL。 |
 
@@ -54,8 +56,20 @@
    随快照发出，`client.js` 只画不算。浏览器里再实现一遍 SM-2 迟早和宿主对不上。
 8. **Markdown 读回是「合并」不是「覆盖」**：`desk.md` 里没出现的卡不动；靠行尾 `<!-- desk:id:… -->` 对回原卡，
    注释被删就当新卡。导出的 Markdown 里不许出现本机绝对路径。
+9. **不背单词那边只读，且凭据不出门。** `bbdc.js` 只读 App 数据与官方 H5 的公开统计接口，
+   不回写、不改 App 任何文件。它挖到的 `sid` 是**她的登录凭据**：缓存落盘前必须只留前 10 位
+   （`bbdcView()` 里做裁剪），面板、日志、提交、导出 Markdown 里都不许出现完整值或本机绝对路径。
+   `sid` 的编码形态也是坑：缓存里那串**已经是百分号编码过的**，必须原样拼进 query
+   （用 `URLSearchParams.set` 或 `encodeURIComponent` 会二次编码 `%`→`%25`，服务端不报错，
+   但会返回**别人的**游客数据 —— 表现是「数字全都对不上」而不是「报错」）。
 
 ## 三个必须知道的坑
+
+### 坑 0：客户端有**两个**面板，别把 `main` 的 key 配错
+
+侧栏入口的 `id` 必须与对应 `main` 的 `key` **完全一致**，否则宿主的
+`layout.selectPanel` 会直接 `throw`：`main panel "<id>" is not registered`。
+现在两对是 `study-desk`（学习工作台）与 `study-desk-bbdc`（单词打卡）。
 
 ### 坑 1：运行时热挂载的 entry 认不出裸包名
 

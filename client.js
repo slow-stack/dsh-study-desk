@@ -45,6 +45,8 @@ window.__ModuleLoader__.load({
 
     const API = '/api/dsh-study-desk'
     const PANEL_ID = 'study-desk'
+    // 单词打卡是第二个独立面板：侧栏一项 + main 一格，id 与 main 的 key 必须同名
+    const BBCDC_PANEL_ID = 'study-desk-bbdc'
     const MINI_POS_KEY = 'dsh-study-desk:mini-pos'
 
     const STATUS_META = [
@@ -111,6 +113,17 @@ window.__ModuleLoader__.load({
       return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     }
 
+    /**
+     * 墙上时间（不是倒计时）。fmtClock 是「还差多久」的 mm:ss 口径，
+     * 拿它渲时间戳会得到 29865200:00 这种荒唐值 —— 两个别混用。
+     */
+    function fmtStamp(ts) {
+      const d = new Date(Number(ts) || 0)
+      if (!Number.isFinite(d.getTime())) return '—'
+      const p = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    }
+
     /** 复习排期的人话说法：逾期 N 天 / 今天到期 / 明天 / N 天后。 */
     function dueLabel(due, now) {
       if (!due) return ''
@@ -146,6 +159,9 @@ window.__ModuleLoader__.load({
       goal: { label: '', date: '', end: '', note: '', days: null, milestones: [] },
       deskFile: '',
       version: '',
+      // 不背单词打卡：宿主只发缓存，刷新是单独一次 op（要拷虚拟机磁盘，不能塞进轮询）
+      bbdc: null,
+      bbdcBusy: false,
       listeners: new Set(),
       subscribe(fn) {
         this.listeners.add(fn)
@@ -179,6 +195,8 @@ window.__ModuleLoader__.load({
         this.goal = json.goal || this.goal
         this.deskFile = json.deskFile || ''
         this.version = json.version || ''
+        // bbdc 可能是 null（还没采过），此时保留旧值，避免刷新把已有数据抹掉
+        if (json.bbdc) this.bbdc = json.bbdc
         this.ready = true
         this.emit()
       },
@@ -206,6 +224,33 @@ window.__ModuleLoader__.load({
           this.error = error && error.message ? error.message : String(error)
           this.emit()
           return null
+        }
+      },
+      /**
+       * 重新采集不背单词打卡。这一步在宿主侧要拷一份 1.3GB 的虚拟机磁盘，
+       * 所以：① 只由用户点「刷新」或冷却时间到了才触发；② 一次只跑一个；
+       * ③ 结果由宿主写进缓存，下一次轮询的快照就会带上。
+       */
+      async refreshBbdc() {
+        if (this.bbdcBusy) return null
+        this.bbdcBusy = true
+        this.emit()
+        try {
+          const res = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ op: 'bbdc.refresh' }),
+          })
+          const json = await res.json()
+          this.absorb(json)
+          return json
+        } catch (error) {
+          this.error = error && error.message ? error.message : String(error)
+          this.emit()
+          return null
+        } finally {
+          this.bbdcBusy = false
+          this.emit()
         }
       },
     }
@@ -701,6 +746,275 @@ window.__ModuleLoader__.load({
             h('span', { key: 'b' }, '多'),
           ]),
         ]),
+      ])
+    }
+
+    // -----------------------------------------------------------------------
+    // 单词打卡（不背单词 · 独立面板）
+    // -----------------------------------------------------------------------
+
+    // 月历的排布只在浏览器里做：宿主只发「哪些天打过卡」的日期数组（一次几 KB），
+    // 日历长什么样随主题与宽度在这里定，宿主不用为画法负责。
+    function ymOf(ts) {
+      const d = new Date(ts)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    }
+
+    function shiftYm(ym, delta) {
+      const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''))
+      if (!m) return ym
+      const d = new Date(Number(m[1]), Number(m[2]) - 1 + delta, 1)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    }
+
+    /** 一个月排成「周一开头」的格子，前面空位补 null */
+    function monthCells(ym, signed, todayKey) {
+      const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''))
+      if (!m) return []
+      const y = Number(m[1])
+      const mo = Number(m[2])
+      const lead = (new Date(y, mo - 1, 1).getDay() + 6) % 7
+      const days = new Date(y, mo, 0).getDate()
+      const cells = []
+      for (let i = 0; i < lead; i += 1) cells.push(null)
+      for (let d = 1; d <= days; d += 1) {
+        const key = `${ym}-${String(d).padStart(2, '0')}`
+        cells.push({
+          key,
+          day: d,
+          on: signed.has(key),
+          today: key === todayKey,
+          future: todayKey ? key > todayKey : false,
+        })
+      }
+      while (cells.length % 7 !== 0) cells.push(null)
+      return cells
+    }
+
+    function BbdcStat({ label, value, unit, tone }) {
+      return h('div', { className: 'sd-bstat' }, [
+        h('div', { className: 'sd-bstat-label', key: 'l' }, label),
+        h('div', { className: 'sd-bstat-value', key: 'v' }, [
+          h('b', { key: 'n', className: tone ? `sd-bstat-num sd-bstat-${tone}` : 'sd-bstat-num' }, String(value)),
+          unit ? h('span', { key: 'u', className: 'sd-bstat-unit' }, unit) : null,
+        ]),
+      ])
+    }
+
+    function BbdcPanel({ now }) {
+      const s = useStore()
+      usePoll(20000)
+      const b = s.bbdc
+      const [ym, setYm] = React.useState(null)
+      const autoRef = React.useRef(0)
+
+      // 采集要拷一份 1.3GB 的虚拟机磁盘，绝不能塞进 20 秒的轮询里。
+      // 所以这里只做「兜底补采」：缓存超过 15 分钟、且距上次自动尝试满 10 分钟才动一次。
+      const fetchedAt = b && b.fetchedAt ? b.fetchedAt : 0
+      React.useEffect(() => {
+        const stale = !fetchedAt || Date.now() - fetchedAt > 15 * 60 * 1000
+        if (!stale || s.bbdcBusy) return
+        if (Date.now() - autoRef.current < 10 * 60 * 1000) return
+        autoRef.current = Date.now()
+        s.refreshBbdc()
+      }, [fetchedAt, s.bbdcBusy])
+
+      const head = h('header', { className: 'sd-head', key: 'head' }, [
+        h('div', { className: 'sd-head-row', key: 'r' }, [
+          h('div', { className: 'sd-head-main', key: 'm' }, [
+            h('h1', { className: 'sd-title', key: 't' }, '单词打卡'),
+            h('p', { className: 'sd-subtitle', key: 's' },
+              '不背单词 · 从本机 App 里读，不用登录网页端'),
+          ]),
+          h('div', { className: 'sd-row sd-row-end', key: 'a' }, [
+            h('button', {
+              key: 'refresh',
+              className: 'sd-pill' + (s.bbdcBusy ? ' busy' : ''),
+              disabled: s.bbdcBusy,
+              onClick: () => s.refreshBbdc(),
+            }, s.bbdcBusy ? '采集中…' : '刷新'),
+          ]),
+        ]),
+      ])
+
+      if (!b) {
+        return h('div', { className: 'sd-panel' }, [
+          h('div', { className: 'sd-scroll', key: 's' },
+            h('div', { className: 'sd-page', key: 'c' }, [
+              head,
+              h('section', { className: 'sd-card-block', key: 'empty' }, [
+                h('div', { className: 'sd-block-head', key: 'h' },
+                  h('h2', { className: 'sd-block-title', key: 't' }, '还没有采集过')),
+                h('div', { className: 'sd-empty-block', key: 'e' },
+                  s.bbdcBusy
+                    ? '正在读本机的不背单词数据（要拷一份虚拟机磁盘，几秒钟）…'
+                    : '点右上角「刷新」读一次。需要 Androws 里装过、登录过不背单词。'),
+              ]),
+            ])),
+        ])
+      }
+
+      const signed = new Set((b.calendar && b.calendar.signedDates) || [])
+      const todayKey = dayKey(now)
+      const effectiveYm = ym || (b.calendar && b.calendar.month) || ymOf(now)
+      const minYm = (b.calendar && b.calendar.minMonth) || effectiveYm
+      const maxYm = (b.calendar && b.calendar.maxMonth) || effectiveYm
+      const cells = monthCells(effectiveYm, signed, todayKey)
+      const monthSigned = (b.calendar && b.calendar.signedDates || []).filter((d) => d.startsWith(effectiveYm)).length
+
+      const cloud = b.cloud || null
+      const cloudToday = cloud && cloud.today ? cloud.today : null
+      const todayWords = cloudToday
+        ? (Number(cloudToday.learnNum) || 0) + (Number(cloudToday.reviewNum) || 0)
+        : ((b.today && b.today.words) || 0)
+      const todayMin = (b.today && b.today.durationMin) || 0
+      const totalWords = cloud && cloud.ok && cloud.totalWords !== null && cloud.totalWords !== undefined
+        ? cloud.totalWords : null
+      const totalMin = (b.total && b.total.durationMin) || 0
+      const u = b.user || {}
+
+      // 最近 7 天的复习次数与时长，按日期把两份列表对齐
+      const recent = []
+      if (cloud) {
+        const dur = new Map((cloud.recentDuration || []).map((x) => [x.date, Number(x.duration) || 0]))
+        for (const x of cloud.recent || []) {
+          recent.push({ date: x.date, reviews: Number(x.reviewNum) || 0, minutes: dur.get(x.date) || 0 })
+        }
+      }
+      const maxReviews = recent.reduce((a, x) => Math.max(a, x.reviews), 0)
+
+      const sourceLabel = { 'app-local': '本机 App', 'learnywhere-api': '服务端' }
+      const sourceText = (b.source || []).map((x) => sourceLabel[x] || x).join(' + ')
+      const whenText = b.fetchedAt ? fmtStamp(b.fetchedAt) : '—'
+
+      return h('div', { className: 'sd-panel' }, [
+        h('div', { className: 'sd-scroll', key: 's' },
+          h('div', { className: 'sd-page', key: 'c' }, [
+            head,
+            !b.ok && b.error
+              ? h('div', { className: 'sd-error', key: 'err' }, '这次没采到：' + b.error)
+              : null,
+            cloud && cloud.error
+              ? h('div', { className: 'sd-error', key: 'cerr' }, '服务端数据没拿到：' + cloud.error)
+              : null,
+
+            // 概览：四格，与 App 里「统计」页的排布一致
+            h('section', { className: 'sd-card-block', key: 'overview' }, [
+              h('div', { className: 'sd-block-head', key: 'h' }, [
+                h('h2', { className: 'sd-block-title', key: 't' }, '概览'),
+                h('span', { className: 'sd-block-sub', key: 's' },
+                  `采集于 ${whenText}${sourceText ? ` · ${sourceText}` : ''}`),
+              ]),
+              h('div', { className: 'sd-bgrid', key: 'g' }, [
+                h(BbdcStat, { key: 'tw', label: '今日学习&复习', value: todayWords, unit: '词' }),
+                h(BbdcStat, { key: 'tm', label: '今日时长', value: todayMin, unit: '分钟' }),
+                h(BbdcStat, {
+                  key: 'aw',
+                  label: '累计学习',
+                  value: totalWords === null ? '—' : totalWords,
+                  unit: totalWords === null ? null : '词',
+                  tone: 'brand',
+                }),
+                h(BbdcStat, { key: 'am', label: '累计时长', value: totalMin, unit: '分钟', tone: 'brand' }),
+              ]),
+              cloud && cloud.months
+                ? h('div', { className: 'sd-block-sub', key: 'note' },
+                    `累计词数来自 ${cloud.months} 个月的逐月记录相加（接口本身不返回总数）；累计复习 ${cloud.totalReviews} 次`)
+                : null,
+            ]),
+
+            // 打卡日历
+            h('section', { className: 'sd-card-block', key: 'calendar' }, [
+              h('div', { className: 'sd-block-head', key: 'h' }, [
+                h('h2', { className: 'sd-block-title', key: 't' }, '打卡日历'),
+                h('span', { className: 'sd-block-sub', key: 's' },
+                  `本月打卡 ${monthSigned} 天${u.continuousDays ? ` · 连续 ${u.continuousDays} 天` : ''}${u.totalDays ? ` · 累计 ${u.totalDays} 天` : ''}`),
+                h('div', { className: 'sd-row sd-row-end', key: 'r' }, [
+                  h('button', {
+                    key: 'prev', className: 'sd-pill sm',
+                    disabled: effectiveYm <= minYm,
+                    onClick: () => setYm(shiftYm(effectiveYm, -1)),
+                  }, '‹'),
+                  h('span', { key: 'ym', className: 'sd-bcal-ym' }, effectiveYm),
+                  h('button', {
+                    key: 'next', className: 'sd-pill sm',
+                    disabled: effectiveYm >= maxYm,
+                    onClick: () => setYm(shiftYm(effectiveYm, 1)),
+                  }, '›'),
+                ]),
+              ]),
+              h('div', { className: 'sd-bcal', key: 'g' }, [
+                ...WEEKDAYS.map((label, i) => h('div', { key: 'h' + i, className: 'sd-bcal-head' }, label)),
+                ...cells.map((c, i) => (c
+                  ? h('div', {
+                      key: c.key,
+                      className: 'sd-bcal-cell' + (c.on ? ' on' : '') + (c.today ? ' today' : '') + (c.future ? ' future' : ''),
+                      title: `${c.key}${c.on ? ' · 已打卡' : ' · 未打卡'}`,
+                    }, String(c.day))
+                  : h('div', { key: 'b' + i, className: 'sd-bcal-cell blank' }))),
+              ]),
+              h('div', { className: 'sd-heat-foot', key: 'f' }, [
+                h('span', { key: 'n', className: 'sd-heat-note' },
+                  b.checkIn && b.checkIn.lastDate ? `最近一次打卡 ${b.checkIn.lastDate}` : '还没有打卡记录'),
+                h('span', { key: 'l', className: 'sd-legend' }, [
+                  h('i', { key: 'a', className: 'sd-bcal-cell on legend' }),
+                  h('span', { key: 'b' }, '已打卡'),
+                  h('i', { key: 'c', className: 'sd-bcal-cell legend' }),
+                  h('span', { key: 'd' }, '未打卡'),
+                ]),
+              ]),
+            ]),
+
+            h('div', { className: 'sd-two', key: 'two' }, [
+              // 正在学
+              h('section', { className: 'sd-card-block', key: 'book' }, [
+                h('div', { className: 'sd-block-head', key: 'h' },
+                  h('h2', { className: 'sd-block-title', key: 't' }, '正在学')),
+                b.book
+                  ? h('div', { className: 'sd-book', key: 'b' }, [
+                      h('div', { className: 'sd-book-name', key: 'n' }, b.book.name || '—'),
+                      h('div', { className: 'sd-book-meta', key: 'm' },
+                        `${b.book.wordCount || 0} 词${b.book.code ? ` · ${b.book.code}` : ''}`),
+                    ])
+                  : h('div', { className: 'sd-empty-block', key: 'e' }, '本机 App 数据里没有正在学的词书。'),
+                b.dailyPlan
+                  ? h('div', { className: 'sd-book-meta', key: 'p' },
+                      `今日计划：${b.dailyPlan.wordCount || 0} 词${b.dailyPlan.phraseCount ? ` + ${b.dailyPlan.phraseCount} 词组` : ''}`)
+                  : null,
+                (b.checkIn && b.checkIn.week || []).length
+                  ? h('div', { className: 'sd-row', key: 'w' },
+                      (b.checkIn.week || []).map((x) => h('span', {
+                        key: x.date,
+                        className: 'sd-pill sm' + (x.signIn ? ' on' : ''),
+                        title: `${x.date}${x.signIn ? ' 已签到' : ' 未签到'}`,
+                      }, `${x.date.slice(5)} ${x.signIn ? '✔' : '—'}`)))
+                  : null,
+              ]),
+              // 最近 7 天
+              h('section', { className: 'sd-card-block', key: 'recent' }, [
+                h('div', { className: 'sd-block-head', key: 'h' }, [
+                  h('h2', { className: 'sd-block-title', key: 't' }, '最近 7 天'),
+                  h('span', { className: 'sd-block-sub', key: 's' }, '复习次数与时长'),
+                ]),
+                recent.length
+                  ? h('div', { className: 'sd-recent', key: 'r' },
+                      recent.map((x) => h('div', { className: 'sd-recent-row', key: x.date }, [
+                        h('span', { className: 'sd-recent-date', key: 'd' }, x.date),
+                        h('div', { className: 'sd-recent-bar', key: 'b' },
+                          h('i', {
+                            style: { width: `${maxReviews ? Math.round((x.reviews / maxReviews) * 100) : 0}%` },
+                          })),
+                        h('span', { className: 'sd-recent-num', key: 'n' },
+                          `${x.reviews} 次${x.minutes ? ` · ${fmtMinutes(x.minutes)}` : ''}`),
+                      ])))
+                  : h('div', { className: 'sd-empty-block', key: 'e' },
+                      cloud && cloud.ok ? '这 7 天没有复习记录。' : '服务端没连上，逐日数据拿不到。'),
+              ]),
+            ]),
+
+            h('div', { className: 'sd-foot', key: 'f' },
+              `数据：不背单词 ${u.nickname ? `${u.nickname} ` : ''}· 采集于 ${whenText}${sourceText ? ` · ${sourceText}` : ''}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
+          ])),
       ])
     }
 
@@ -1847,6 +2161,34 @@ window.__ModuleLoader__.load({
       '.sd-cell.legend{display:inline-block;vertical-align:middle;margin:0 2px}',
       '.sd-heat-foot{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
       '.sd-legend{display:inline-flex;align-items:center;gap:3px;margin-left:auto}',
+      // 单词打卡（不背单词）
+      '.sd-pill.busy{opacity:.6;cursor:progress}',
+      '.sd-pill:disabled{opacity:.45;cursor:default}',
+      '.sd-bgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}',
+      '.sd-bstat{border:1px solid var(--dsw-alias-border-l1);border-radius:11px;background:var(--dsw-alias-bg-base);padding:11px 13px;display:flex;flex-direction:column;gap:5px;min-width:0}',
+      '.sd-bstat-label{font-size:11px;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary)}',
+      '.sd-bstat-value{display:flex;align-items:baseline;gap:4px;min-width:0}',
+      '.sd-bstat-num{font-size:25px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
+      '.sd-bstat-num.sd-bstat-brand{color:var(--dsw-alias-brand-primary)}',
+      '.sd-bstat-unit{font-size:12px;color:var(--dsw-alias-label-secondary)}',
+      '.sd-bcal-ym{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:6.5em;text-align:center}',
+      '.sd-bcal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;max-width:340px;margin:2px auto 0}',
+      '.sd-bcal-head{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;line-height:1.6}',
+      '.sd-bcal-cell{aspect-ratio:1/1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}',
+      '.sd-bcal-cell.blank{background:transparent;box-shadow:none}',
+      '.sd-bcal-cell.future{opacity:.45}',
+      '.sd-bcal-cell.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 78%,var(--dsw-alias-bg-layer-3));color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:none}',
+      '.sd-bcal-cell.today{outline:1px solid var(--dsw-alias-label-primary);outline-offset:1px}',
+      '.sd-bcal-cell.legend{width:13px;height:13px;aspect-ratio:auto;border-radius:2.5px;display:inline-block;vertical-align:middle;margin:0 2px}',
+      '.sd-book{display:flex;flex-direction:column;gap:4px}',
+      '.sd-book-name{font-size:13px;line-height:1.5;word-break:break-word}',
+      '.sd-book-meta{font-size:11.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.sd-recent{display:flex;flex-direction:column;gap:6px}',
+      '.sd-recent-row{display:grid;grid-template-columns:minmax(0,3.6em) minmax(0,1fr) auto;align-items:center;gap:9px;font-size:11.5px}',
+      '.sd-recent-date{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.sd-recent-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
+      '.sd-recent-bar i{display:block;height:100%;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 70%,transparent)}',
+      '.sd-recent-num{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}',
       // 科目分布
       '.sd-subj-list{display:flex;flex-direction:column;gap:7px}',
       '.sd-subj{display:grid;grid-template-columns:minmax(0,7.5em) minmax(0,1fr) auto;align-items:center;gap:9px;font-size:11.5px}',
@@ -1977,7 +2319,7 @@ window.__ModuleLoader__.load({
           ua: String(navigator.userAgent || ''),
           innerWidth: window.innerWidth,
           innerHeight: window.innerHeight,
-          hasSlots: Boolean(ctx.get && ctx.get('slots')),
+          hasSlots: (() => { try { return Boolean(ctx.get && ctx.get('slots')) } catch { return 'throws' } })(),
           hasLayout: Boolean(getLayout()),
           reactVersion: String((React && React.version) || '未知'),
         },
@@ -2012,7 +2354,12 @@ window.__ModuleLoader__.load({
         if (watchTimer) { clearInterval(watchTimer); watchTimer = 0 }
       }, 'dsh-study-desk: watcher')
 
-      const slots = ctx.get('slots')
+      let slots
+      try { slots = ctx.get('slots') } catch (error) {
+        reportDiag({ kind: 'slots-throw', where: 'client', message: '取 slots 服务抛错：' + String((error && error.message) || error) })
+        console.warn('[dsh-study-desk] 取 slots 服务抛错，界面不注册', error)
+        return
+      }
       if (slots === undefined) {
         reportDiag({ kind: 'no-slots', where: 'client', message: '拿不到 slots 服务，界面不注册' })
         console.warn('[dsh-study-desk] 拿不到 slots 服务，界面不注册')
@@ -2075,7 +2422,20 @@ window.__ModuleLoader__.load({
         () => h(Settings, { key: 'settings' }),
         'settings.section')
 
-      reportDiag({ kind: 'slots-registered', where: 'client', message: '四个槽位注册调用已完成' })
+      // 单词打卡：与工作台并列的第二个入口。
+      // 侧栏 id 必须与 main 的 key 完全同名，否则宿主 layout.selectPanel 会抛
+      //   layout.selectPanel: main panel "…" is not registered
+      register('sidebar.panellist',
+        { name: 'sidebar.panellist', id: BBCDC_PANEL_ID, order: 41, label: '单词打卡' },
+        (props) => h(Icon, { name: 'tag', size: (props && props.size) || 18 }),
+        'sidebar.panellist.bbdc')
+
+      register('main',
+        { name: 'main', key: BBCDC_PANEL_ID },
+        () => h(BbdcPanel, { key: 'bbdc' }),
+        'main.bbdc')
+
+      reportDiag({ kind: 'slots-registered', where: 'client', message: '六个槽位注册调用已完成' })
     }
 
     exports.apply = apply

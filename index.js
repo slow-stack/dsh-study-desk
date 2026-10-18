@@ -58,6 +58,7 @@ import {
   writeDesk,
 } from './desk.js'
 import { fromMarkdown, mergeMarkdown, toMarkdown } from './markdown.js'
+import { bbdcView, readBbdc, readCache as readBbdcCache } from './bbdc.js'
 import {
   completeTimer,
   countFocusToday,
@@ -236,6 +237,10 @@ function snapshot(state) {
     deskFile: deskFile(),
     markdownFile: markdownFile(),
     version: pluginVersion,
+    // 不背单词打卡：这里只发缓存（一次快照不该去拷 1.3GB 的虚拟机磁盘）。
+    // 真要刷新走 op=bbdc.refresh，采完写缓存，下一次快照就带上了。
+    // 过一遍 bbdcView：老版本缓存是另一种形状，这里统一成面板认的那份。
+    bbdc: bbdcView(readBbdcCache()),
   }
 }
 
@@ -354,6 +359,14 @@ async function handleApi(req, res) {
       sendJson(res, 200, { ok: true, at: Date.now(), entries: report.entries.length })
       return
     }
+    if (op === 'bbdc.refresh') {
+      // 采集要拷虚拟机磁盘、还要打几十个 HTTP 请求，所以不放在 withDesk 串行区里，
+      // 更不放在 snapshot 里——面板点「刷新」或轮询到点了才走这里。
+      const data = await readBbdc({ force: true, offline: !!payload.offline })
+      const { state } = await withDesk(null)
+      sendJson(res, 200, { ...snapshot(state), result: { ok: !!data.ok, error: data.error || null } })
+      return
+    }
     const mutate = MUTATIONS[op]
     if (!mutate) throw new Error('未知操作：' + op)
     const { state, result } = await withDesk((s) => mutate(s, payload))
@@ -463,11 +476,59 @@ function weeklyText(state, weeks = 8, now = Date.now()) {
   return lines.join('\n')
 }
 
+/**
+ * 不背单词打卡记录的纯文本摘要。数据形状由 bbdc.js 的 bbdcView 统一，
+ * 这里只负责把数字讲成人话（模型侧和工具侧共用同一段文案）。
+ */
+function bbdcText(data) {
+  if (!data) return '还没采集过不背单词的打卡数据。用 action=bbdc + refresh=true 采一次（需要 Androws 里登录过不背单词）。'
+  const lines = []
+  const when = data.fetchedAt ? new Date(data.fetchedAt) : null
+  const stamp = when
+    ? `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+    : '未知'
+  lines.push(`不背单词 · 打卡记录（采集于 ${stamp}${data.source && data.source.length ? `，来源 ${data.source.join(' + ')}` : ''}）`)
+  if (!data.ok) {
+    lines.push(`- 这次没采到：${data.error || '未知原因'}`)
+    return lines.join('\n')
+  }
+  const u = data.user
+  if (u) {
+    lines.push(`- 账号：${u.nickname || '（未命名）'}${u.uid ? `（uid ${u.uid}）` : ''}`)
+    lines.push(`- 连续签到 ${u.continuousDays || 0} 天 · 累计签到 ${u.totalDays || 0} 天`)
+  }
+  if (data.checkIn && data.checkIn.lastDate) lines.push(`- 最近一次打卡：${data.checkIn.lastDate}`)
+  const t = data.today
+  if (t) lines.push(`- 今日：学习 ${t.words || 0} 词 · 时长 ${fmtMinutes(t.durationMin || 0)}`)
+  const tot = data.total
+  if (tot) lines.push(`- 累计时长：${fmtMinutes(tot.durationMin || 0)}${tot.durationSec ? `（${tot.durationSec} 秒）` : ''}`)
+  const c = data.cloud
+  if (c && c.ok && c.totalWords !== null && c.totalWords !== undefined) {
+    lines.push(`- 累计学习 ${c.totalWords} 词 · 累计复习 ${c.totalReviews || 0} 次（近 ${c.months || 0} 个月）`)
+  } else if (c && c.error) {
+    lines.push(`- 累计词数没拿到：${c.error}`)
+  }
+  if (data.book) lines.push(`- 正在学：${data.book.name || ''}${data.book.wordCount ? `（${data.book.wordCount} 词）` : ''}`)
+  if (data.dailyPlan) lines.push(`- 今日计划：${data.dailyPlan.wordCount || 0} 词${data.dailyPlan.phraseCount ? ` + ${data.dailyPlan.phraseCount} 词组` : ''}`)
+  const signed = (data.calendar && data.calendar.signedDates) || []
+  if (signed.length) {
+    const month = String(data.calendar.month || '').slice(0, 7)
+    const inMonth = signed.filter((d) => d.startsWith(month))
+    lines.push(`- 本月打卡 ${inMonth.length} 天：${inMonth.join('、') || '（无）'}`)
+    lines.push(`- 全部打卡共 ${signed.length} 天（${signed[0]} ~ ${signed[signed.length - 1]}）`)
+  }
+  const week = (data.checkIn && data.checkIn.week) || []
+  if (week.length) {
+    lines.push(`- 本周签到：${week.map((x) => `${x.date} ${x.signIn ? '✔' : '—'}`).join(' ｜ ')}`)
+  }
+  return lines.join('\n')
+}
+
 // ---------------------------------------------------------------------------
 // 工具
 // ---------------------------------------------------------------------------
 
-const STUDY_DESK_ACTIONS = ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus', 'review', 'journal', 'report']
+const STUDY_DESK_ACTIONS = ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus', 'review', 'journal', 'report', 'bbdc']
 
 function makeTool() {
   return defineTool({
@@ -480,7 +541,7 @@ function makeTool() {
       + 'board=看当前看板全貌；add=新建卡；move=卡片换列/排序；update=改卡片字段；remove=删卡；'
       + 'focus=起停番茄钟（给 off=true 或 minutes 控制）；stats=查最近 N 天统计；'
       + 'review=看今日复习队列（带 id/title + grade 时改为打分）；journal=看最近复盘（带 text 时写入）；'
-      + 'report=出最近若干周的周报。',
+      + 'report=出最近若干周的复习周报；bbdc=看不背单词的打卡记录（默认读缓存，refresh=true 才重新采集）。',
     parameters: {
       action: { type: 'string', enum: STUDY_DESK_ACTIONS, description: '要做的操作' },
       title: { type: 'string', description: '卡片标题（add 必填；move/update/remove/review 可用它代替 id 定位）' },
@@ -502,6 +563,8 @@ function makeTool() {
       text: { type: 'string', description: 'journal 的复盘正文；空串表示删掉那天的记录' },
       date: { type: 'string', description: 'journal 的日期 YYYY-MM-DD，省略=今天' },
       weeks: { type: 'number', description: 'report 看最近几周（默认 8）' },
+      refresh: { type: 'boolean', description: 'bbdc：true = 重新去不背单词采集一次（要拷虚拟机磁盘、约几秒）；省略则读缓存' },
+      offline: { type: 'boolean', description: 'bbdc：true = 只读本机 App 数据，不联网查服务端' },
     },
     output: {
       schema: { type: 'json' },
@@ -616,6 +679,13 @@ function makeTool() {
           const { state } = await withDesk(null)
           return { ok: true, message: weeklyText(state, Math.max(1, Math.min(52, Math.round(Number(args.weeks) || 8)))) }
         }
+        if (action === 'bbdc') {
+          // 默认读缓存（便宜）；带 refresh=true 才真去采集一次
+          const data = args.refresh
+            ? await readBbdc({ force: true, offline: !!args.offline })
+            : bbdcView(readBbdcCache())
+          return { ok: true, message: bbdcText(data) }
+        }
         return { ok: false, message: '未处理：' + action }
       } catch (error) {
         return { ok: false, message: (error && error.message) ? error.message : String(error) }
@@ -683,4 +753,4 @@ export function apply(ctx, config) {
   console.log(`[dsh-study-desk] v${pluginVersion} 已加载（数据：${deskFile()}）`)
 }
 
-export { boardText, statsText, reviewText, weeklyText, nextMilestone }
+export { boardText, statsText, reviewText, weeklyText, bbdcText, nextMilestone }
