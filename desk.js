@@ -104,8 +104,9 @@ export function goalInfo(state, now = Date.now()) {
     let tone = 'future'
     let text = `${toStart} 天后`
     if (toEnd < 0) { tone = 'past'; text = '已结束' }
-    else if (toStart === 0) { tone = 'now'; text = toEnd === 0 ? '就是今天' : '进行中 · 今天最后一天' }
-    else if (toStart < 0 && toEnd >= 0) { tone = 'now'; text = `进行中 · 还剩 ${toEnd + 1} 天` }
+    // 先判「窗口内」再判「今天开始」：否则跨多日节点的第一天会被误写成「今天最后一天」，
+    // 把开始日念成截止日，平白吓人。
+    else if (toStart <= 0 && toEnd >= 0) { tone = 'now'; text = toEnd === 0 ? '就是今天' : `进行中 · 还剩 ${toEnd + 1} 天` }
     else if (toStart === 1) text = '明天开始'
     return { ...m, toStart, toEnd, tone, text }
   })
@@ -558,19 +559,23 @@ function findScheduledTask(state, ref) {
   return task
 }
 
-/** 把一张卡拉进复习循环：due 不填就是「今天到期」。 */
+/** 把一张卡拉进复习循环：due 不填就是「今天到期」。已有的难度/遍数/间隔保留，不清零。 */
 export function scheduleTask(state, ref, due, now = Date.now()) {
   const task = findScheduledTask(state, ref)
   const key = String(due || '').trim()
-  task.review = { ...emptyReview(), due: /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : dayKey(now) }
+  task.review = {
+    ...emptyReview(),
+    ...(task.review || {}),
+    due: /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : dayKey(now),
+  }
   task.updatedAt = now
   return task
 }
 
-/** 移出复习循环：排期与统计一起归零，卡片本身留着。 */
+/** 移出复习循环：只撤掉排期，难度/遍数/遗忘次数这些学过的痕迹留着，下次拉回来还接着算。 */
 export function unscheduleTask(state, ref, now = Date.now()) {
   const task = findScheduledTask(state, ref)
-  task.review = emptyReview()
+  task.review = { ...emptyReview(), ...(task.review || {}), due: null }
   task.updatedAt = now
   return task
 }

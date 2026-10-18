@@ -4,3 +4,7 @@ node_modules/
 *.bak-*
 .DS_Store
 Thumbs.db
+# 本机探针脚本与第三方工具留的缓存，不该进版本库
+.audit-tmp-*
+.qoder-credits/
+pack.log
