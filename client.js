@@ -151,6 +151,7 @@ window.__ModuleLoader__.load({
       review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
       due: [],
       forecast: { days: [], later: 0, total: 0, max: 0 },
+      focusPie: null,
       plan: { items: [], due: 0, cap: 10, advice: null },
       tags: [],
       weekly: { weeks: [], goalWeekly: 0 },
@@ -187,6 +188,7 @@ window.__ModuleLoader__.load({
         this.review = json.review || this.review
         this.due = json.due || []
         this.forecast = json.forecast || this.forecast
+        this.focusPie = json.focusPie || this.focusPie
         this.plan = json.plan || this.plan
         this.tags = json.tags || []
         this.weekly = json.weekly || this.weekly
@@ -575,19 +577,49 @@ window.__ModuleLoader__.load({
       const presets = [25, 45, 60]
       const candidates = store.state.tasks.filter((t) => t.status !== 'done')
       const [picked, setPicked] = React.useState('')
+      const [nameDraft, setNameDraft] = React.useState('')
+      // 番茄ToDo 规矩：起钟必须先报名字。名字来源三选一——打的字 > 挂的卡标题 > 无（禁用起钟）。
+      const pickedTask = candidates.find((t) => t.id === picked)
+      const typed = nameDraft.trim().slice(0, 24)
+      const effectiveName = typed || (pickedTask ? pickedTask.title : '')
+      const subjectChips = (settings.subjects || []).filter((x) => x && x.label).slice(0, 6)
 
-      const start = (minutes) => store.apply('timer.start', {
-        minutes,
-        kind: 'focus',
-        taskId: picked || undefined,
-      })
+      const start = (minutes) => {
+        if (!effectiveName) return
+        store.apply('timer.start', {
+          minutes,
+          kind: 'focus',
+          taskId: picked || undefined,
+          name: typed || undefined,
+        })
+        setNameDraft('')
+      }
 
       return h('section', { className: 'sd-timer-card' }, [
+        !timer ? h('div', { className: 'sd-timer-name-row', key: 'nr' }, [
+          h('input', {
+            key: 'n',
+            className: 'sd-input wide' + (effectiveName ? '' : ' sd-name-empty'),
+            type: 'text',
+            value: nameDraft,
+            maxLength: 24,
+            placeholder: '这段要做什么？如：864 论述练习 / 背单词（起钟必填）',
+            onChange: (e) => setNameDraft(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') start(settings.focusMin || 25) },
+          }),
+          ...subjectChips.map((x) => h('button', {
+            key: x.id || x.label,
+            className: 'sd-pill sm' + (typed === x.label ? ' on' : ''),
+            title: `用「${x.label}」当这段的名字`,
+            onClick: () => setNameDraft(typed === x.label ? '' : x.label),
+          }, x.label)),
+        ]) : null,
         h('div', { className: 'sd-timer-row', key: 'r' }, [
           h('button', {
             key: 'play',
             className: 'sd-iconbtn sd-iconbtn-lg',
-            title: !timer ? '开始专注' : timer.running ? '暂停' : '继续',
+            title: timer ? (timer.running ? '暂停' : '继续') : (effectiveName ? '开始专注' : '先给这段起个名字'),
+            disabled: !timer && !effectiveName,
             onClick: () => {
               if (!timer) start(settings.focusMin || 25)
               else if (timer.running) store.apply('timer.pause')
@@ -601,7 +633,8 @@ window.__ModuleLoader__.load({
                 !timer ? '未开始' : isFocus ? `专注 · 第 ${timer.round} 轮` : '休息'),
               timer && timer.title ? h('span', { className: 'sd-dot', key: 'd' }) : null,
               timer && timer.title ? h('span', { className: 'sd-timer-task', key: 't', title: timer.title }, timer.title) : null,
-              !timer && s.focusRoundsToday ? h('span', { className: 'sd-timer-sub', key: 's' }, `今天已完成 ${s.focusRoundsToday} 轮`) : null,
+              !timer && !effectiveName && s.focusRoundsToday ? h('span', { className: 'sd-timer-sub', key: 's' }, `今天已完成 ${s.focusRoundsToday} 轮`) : null,
+              !timer && effectiveName ? h('span', { className: 'sd-timer-sub', key: 's2' }, `这段叫「${effectiveName}」`) : null,
             ]),
             h('div', { className: 'sd-timer-bar', key: 'b' },
               h(Progress, { value: total - remaining, max: total, tone: isFocus ? 'brand' : 'muted' })),
@@ -621,6 +654,8 @@ window.__ModuleLoader__.load({
               h('span', { className: 'sd-mini-cap', key: 'c' }, '时长'),
               ...presets.map((m) => h('button', {
                 key: m, className: 'sd-pill' + ((settings.focusMin || 25) === m ? ' on' : ''),
+                disabled: !effectiveName,
+                title: effectiveName ? `开始 ${m} 分钟` : '先给这段起个名字',
                 onClick: () => store.apply('settings.update', { patch: { focusMin: m } }).then(() => start(m)),
               }, `${m} 分钟`)),
             ])
@@ -1330,6 +1365,95 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    // -----------------------------------------------------------------------
+    // 番茄投入饼图（番茄ToDo 式：按「这段番茄的名字」聚合成环）
+    // -----------------------------------------------------------------------
+
+    /** 扇区取色只用主题 token：五个既有色轮换 + 透明度阶梯，绝不硬编码颜色。 */
+    const PIE_TONES = [
+      'var(--dsw-alias-brand-primary)',
+      'var(--dsw-alias-state-success-primary)',
+      'var(--dsw-alias-state-business-primary)',
+      'var(--dsw-alias-state-idle-primary)',
+      'color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-state-idle-primary))',
+    ]
+
+    function pieSlicePath(cx, cy, r, ri, a0, a1) {
+      // 整圆特判：起终点重合时 arc 画不出来，用两个半圆拼
+      if (a1 - a0 >= Math.PI * 2 - 1e-6) {
+        return [
+          `M ${cx} ${cy - r}`,
+          `A ${r} ${r} 0 1 1 ${cx} ${cy + r}`,
+          `A ${r} ${r} 0 1 1 ${cx} ${cy - r}`,
+          `M ${cx} ${cy - ri}`,
+          `A ${ri} ${ri} 0 1 0 ${cx} ${cy + ri}`,
+          `A ${ri} ${ri} 0 1 0 ${cx} ${cy - ri}`,
+          'Z',
+        ].join(' ')
+      }
+      const p = (radius, a) => [cx + radius * Math.sin(a), cy - radius * Math.cos(a)]
+      const large = a1 - a0 > Math.PI ? 1 : 0
+      const [x0, y0] = p(r, a0)
+      const [x1, y1] = p(r, a1)
+      const [xi, yi] = p(ri, a1)
+      const [xj, yj] = p(ri, a0)
+      return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} L ${xi} ${yi} A ${ri} ${ri} 0 ${large} 0 ${xj} ${yj} Z`
+    }
+
+    function FocusPie() {
+      const s = useStore()
+      const [range, setRange] = React.useState('today')
+      const data = s.focusPie || { today: [], month: [] }
+      const rows = range === 'today' ? (data.today || []) : (data.month || [])
+      const MAX_SLICES = 8
+      const total = rows.reduce((m, x) => m + x.minutes, 0)
+      let slices = rows
+      if (rows.length > MAX_SLICES) {
+        const head = rows.slice(0, MAX_SLICES - 1)
+        const tail = rows.slice(MAX_SLICES - 1)
+        slices = head.concat([{ label: `其它 ${tail.length} 项`, minutes: tail.reduce((m, x) => m + x.minutes, 0), segments: tail.reduce((m, x) => m + x.segments, 0), merged: true }])
+      }
+      const cap = range === 'today' ? '今天' : '近 30 天'
+
+      let acc = 0
+      const TAU = Math.PI * 2
+      const segs = []
+      slices.forEach((x, i) => {
+        const a0 = (acc / total) * TAU
+        acc += x.minutes
+        const a1 = (acc / total) * TAU
+        segs.push({ x, i, d: pieSlicePath(48, 48, 40, 24, a0, a1) })
+      })
+
+      return h('section', { className: 'sd-card-block' }, [
+        h('div', { className: 'sd-block-head', key: 'h' }, [
+          h('h2', { className: 'sd-block-title', key: 't' }, '番茄分布'),
+          h('div', { className: 'sd-range-tabs', key: 'r' }, [
+            h('button', { key: 'd', className: 'sd-pill sm' + (range === 'today' ? ' on' : ''), onClick: () => setRange('today') }, '今天'),
+            h('button', { key: 'm', className: 'sd-pill sm' + (range === 'month' ? ' on' : ''), onClick: () => setRange('month') }, '近 30 天'),
+          ]),
+          h('span', { className: 'sd-block-sub', key: 's' }, total ? `${cap}共 ${fmtMinutes(total)}` : '还没有番茄'),
+        ]),
+        total
+          ? h('div', { className: 'sd-pie-wrap', key: 'w' }, [
+            h('svg', { className: 'sd-pie', key: 'p', viewBox: '0 0 96 96', width: 112, height: 112, role: 'img', 'aria-label': cap + '番茄投入饼图' },
+              segs.map((g) => h('path', {
+                key: g.x.label,
+                d: g.d,
+                fill: PIE_TONES[g.i % PIE_TONES.length],
+                opacity: g.x.merged ? 0.45 : 1,
+              }, h('title', null, `${g.x.label}：${fmtMinutes(g.x.minutes)}（${g.x.segments} 段）`))),
+              h('text', { x: 48, y: 46, className: 'sd-pie-num', textAnchor: 'middle' }, fmtShort(total)),
+              h('text', { x: 48, y: 57, className: 'sd-pie-cap', textAnchor: 'middle' }, cap)),
+            h('div', { className: 'sd-pie-legend', key: 'l' }, slices.map((x, i) => h('div', { className: 'sd-pie-row', key: x.label }, [
+              h('i', { className: 'sd-pie-swatch', style: { background: PIE_TONES[i % PIE_TONES.length], opacity: x.merged ? 0.45 : 1 } }),
+              h('span', { className: 'sd-pie-name', title: x.label }, x.label),
+              h('span', { className: 'sd-pie-min' }, `${fmtMinutes(x.minutes)} · ${Math.round((x.minutes / total) * 100)}%`),
+            ]))),
+          ])
+          : h('div', { className: 'sd-empty-block', key: 'e' }, '起一个有名字的番茄（比如「864 论述练习」），这里就按名字画出时间都花去哪了。'),
+      ])
+    }
 
     // -----------------------------------------------------------------------
     // 遗忘曲线 / 到期预报 / 今日建议
@@ -1627,12 +1751,13 @@ window.__ModuleLoader__.load({
             h(Board, { key: 'board' }),
             h('div', { className: 'sd-two', key: 'two' }, [
               h(Heatmap, { key: 'heat', now }),
-              h(Stats, { key: 'stats', now }),
+              h(FocusPie, { key: 'pie' }),
             ]),
             h('div', { className: 'sd-two', key: 'two2' }, [
+              h(Stats, { key: 'stats', now }),
               h(Weekly, { key: 'weekly' }),
-              h(JournalBlock, { key: 'journal', now }),
             ]),
+            h(JournalBlock, { key: 'journal', now }),
             h('div', { className: 'sd-foot', key: 'f' },
               `数据：${s.deskFile || '—'}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
           ])),
@@ -2045,6 +2170,9 @@ window.__ModuleLoader__.load({
       '.sd-bar-muted .sd-bar-fill{background:var(--dsw-alias-state-idle-primary)}',
       // 计时卡
       '.sd-timer-card{border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:14px 16px;display:flex;flex-direction:column;gap:10px}',
+      '.sd-timer-name-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}',
+      '.sd-timer-name-row .sd-input.wide{flex:1;min-width:12em}',
+      '.sd-name-empty::placeholder{color:var(--dsw-alias-label-dimmed)}',
       '.sd-timer-row{display:flex;align-items:center;gap:14px}',
       '.sd-timer-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}',
       '.sd-timer-clock{font-size:34px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:.01em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}',
@@ -2196,6 +2324,18 @@ window.__ModuleLoader__.load({
       '.sd-subj-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
       '.sd-subj-min{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
       '.sd-empty-block{font-size:11.5px;color:var(--dsw-alias-label-dimmed);line-height:1.6}',
+      // 番茄分布饼图
+      '.sd-pie-wrap{display:flex;align-items:center;gap:14px;flex-wrap:wrap}',
+      '.sd-pie{flex:none}',
+      '.sd-pie path{stroke:var(--dsw-alias-bg-layer-1);stroke-width:1}',
+      '.sd-pie-num{font-size:13px;font-weight:600;fill:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}',
+      '.sd-pie-cap{font-size:7.5px;fill:var(--dsw-alias-label-tertiary)}',
+      '.sd-pie-legend{flex:1;min-width:9em;display:flex;flex-direction:column;gap:6px}',
+      '.sd-pie-row{display:flex;align-items:center;gap:8px;font-size:11.5px;min-width:0}',
+      '.sd-pie-swatch{width:9px;height:9px;border-radius:3px;flex:none}',
+      '.sd-pie-name{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+      '.sd-pie-min{margin-left:auto;flex:none;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
+      '.sd-range-tabs{display:flex;align-items:center;gap:5px;margin-left:auto}',
       // 今日复习
       '.sd-block-title{display:flex;align-items:center;gap:6px}',
       '.sd-review-list{display:flex;flex-direction:column;gap:8px}',

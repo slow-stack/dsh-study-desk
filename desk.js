@@ -731,6 +731,25 @@ export function subjectBreakdown(state, days = 30, now = Date.now()) {
     .sort((a, b) => b.minutes - a.minutes)
 }
 
+/**
+ * 按「这一段的名字」汇总最近 N 天的专注（番茄钟饼图的唯一数据源）。
+ * 名字来自 session.title（起钟时必填的自定义名或所挂卡片的标题）；
+ * 老数据没有名字的进「未命名」，不丢账。
+ */
+export function focusByName(state, days = 30, now = Date.now()) {
+  const from = addDays(startOfDay(now), -(Math.max(1, days) - 1))
+  const map = new Map()
+  for (const s of state.sessions) {
+    if (s.kind !== 'focus' || s.at < from) continue
+    const label = String(s.title || '').trim() || '未命名'
+    const cell = map.get(label) || { label, minutes: 0, segments: 0 }
+    cell.minutes += s.minutes
+    cell.segments += 1
+    map.set(label, cell)
+  }
+  return [...map.values()].sort((a, b) => b.minutes - a.minutes)
+}
+
 /** 本周一 00:00（周日起算的 locale 不可靠，这里固定周一）。 */
 export function startOfWeek(ts) {
   const day = startOfDay(ts)
