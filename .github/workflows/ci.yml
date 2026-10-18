@@ -29,12 +29,24 @@ jobs:
       - name: 用 stub ctx 把宿主与客户端两侧 apply() 真跑一遍
         run: node apply-probe.mjs
 
-      - name: 发布内容自检（files 白名单里必须有 markdown.js）
+      - name: 发布内容自检（files 白名单里的每个文件都得真进包）
         run: |
           # npm 的清单打在 stderr 上，不并过来 tee 到的是空文件
           npm pack --dry-run 2>&1 | tee pack.log
-          grep -q 'markdown.js' pack.log
-          grep -q 'total files: 12' pack.log
+          # 不再钉死「total files: 12」——加一个源文件就得改一次数字，红得毫无信息。
+          # 改成按 package.json 的 files 白名单逐个核对：少一个才是真问题。
+          node -e "
+          const { readFileSync } = require('node:fs');
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const log = readFileSync('pack.log', 'utf8');
+          const missing = [];
+          for (const entry of pkg.files) {
+            const probe = entry.replace(/\/$/, '');
+            if (!log.includes(probe)) missing.push(entry);
+          }
+          if (missing.length) { console.error('包清单缺：' + missing.join(', ')); process.exit(1); }
+          console.log('files 白名单 ' + pkg.files.length + ' 项全部进包');
+          "
 
   portable:
     name: 可移植性检查

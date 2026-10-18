@@ -57,11 +57,16 @@ check('apply() 不抛', () => host.apply(ctx, {}))
 check('注册了 1 个工具', () => assert.equal(registered.tools.length, 1))
 const tool = registered.tools[0]
 check('工具名 study_desk', () => assert.equal(tool.name, 'study_desk'))
-check('工具参数含 10 个 action', () => {
+check('工具参数含 11 个 action（含 bbdc）', () => {
   // defineTool 会把友好描述编译成 JSON Schema（{type:'object',properties:{...}}），
   // 这里两种形态都认，免得又踩一次「编译层被绕过」的坑。
   const props = tool.parameters.properties || tool.parameters
-  assert.deepEqual(props.action.enum, ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus', 'review', 'journal', 'report'])
+  assert.deepEqual(props.action.enum, ['board', 'add', 'move', 'update', 'remove', 'stats', 'focus', 'review', 'journal', 'report', 'bbdc'])
+})
+check('bbdc 的两个开关参数都在（refresh / offline）', () => {
+  const props = tool.parameters.properties || tool.parameters
+  assert.equal(props.refresh.type, 'boolean')
+  assert.equal(props.offline.type, 'boolean')
 })
 check('output.schema 是 register 认的 JSON Schema（不能是未编译的 {type:"json"}）', () => {
   const t = tool.output.schema && tool.output.schema.type
@@ -394,20 +399,32 @@ const clientCtx = {
 }
 
 check('client apply() 不抛', () => clientMod.apply(clientCtx))
-check('注册了 4 个槽位', () => {
+// 两个面板：学习工作台 + 单词打卡，各自一对 sidebar.panellist / main
+check('注册了 6 个槽位（两个面板 + 迷你条 + 设置页）', () => {
   const names = clientRegistered.slots.map((s) => s.slotName).sort()
-  assert.deepEqual(names, ['main', 'settings.section', 'shell.overlay', 'sidebar.panellist'])
+  assert.deepEqual(names, ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
 check('inject 的槽位名与注册的一致', () => {
-  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'settings.section', 'shell.overlay', 'sidebar.panellist'])
+  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
-check('sidebar.panellist 用了 id=study-desk', () => {
-  const s = clientRegistered.slots.find((x) => x.slotName === 'sidebar.panellist')
-  assert.equal(s.id, 'study-desk')
+check('两个侧栏面板的 id 与两个 main 的 key 逐一对齐', () => {
+  const ids = clientRegistered.slots.filter((x) => x.slotName === 'sidebar.panellist').map((x) => x.id).sort()
+  const keys = clientRegistered.slots.filter((x) => x.slotName === 'main').map((x) => x.key).sort()
+  assert.deepEqual(ids, ['study-desk', 'study-desk-bbdc'])
+  assert.deepEqual(keys, ids)
 })
-check('main 用了 key=study-desk（与侧栏面板 id 对齐）', () => {
-  const s = clientRegistered.slots.find((x) => x.slotName === 'main')
-  assert.equal(s.key, 'study-desk')
+check('sidebar.panellist 的 id 不重复（宿主按 id 去重会丢面板）', () => {
+  const ids = clientRegistered.slots.filter((x) => x.slotName === 'sidebar.panellist').map((x) => x.id)
+  assert.equal(new Set(ids).size, ids.length)
+})
+check('学习工作台仍用 id=study-desk', () => {
+  const s = clientRegistered.slots.find((x) => x.slotName === 'sidebar.panellist' && x.id === 'study-desk')
+  assert.ok(s)
+})
+check('单词打卡面板用 id=study-desk-bbdc', () => {
+  const s = clientRegistered.slots.find((x) => x.slotName === 'sidebar.panellist' && x.id === 'study-desk-bbdc')
+  assert.ok(s)
+  assert.equal(s.order, 41)
 })
 check('shell.overlay 有 id', () => {
   const s = clientRegistered.slots.find((x) => x.slotName === 'shell.overlay')
@@ -426,17 +443,9 @@ check('每个槽位的 factory 都用 Boundary 包了一层', () => {
     assert.equal(node.__el.name, 'Boundary', `${s.slotName} 没被 Boundary 包住，实际是 ${node.__el && node.__el.name}`)
   }
 })
-check('Boundary 的 where 标签与槽位对得上', () => {
-  const expects = {
-    'sidebar.panellist': 'sidebar.panellist',
-    main: 'main',
-    'shell.overlay': 'shell.overlay',
-    'settings.section': 'settings.section',
-  }
-  for (const s of clientRegistered.slots) {
-    const node = s.factory({ size: 18 })
-    assert.equal(node.props.where, expects[s.slotName])
-  }
+check('Boundary 的 where 标签能区分两个面板', () => {
+  const wheres = clientRegistered.slots.map((s) => s.factory({ size: 18 }).props.where).sort()
+  assert.deepEqual(wheres, ['main', 'main.bbdc', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist.bbdc'])
 })
 check('注入了一份 style', () => assert.ok(clientRegistered.effects.length > 0))
 
