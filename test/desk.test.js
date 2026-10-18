@@ -6,6 +6,7 @@ import {
   dayKey,
   daysUntil,
   dueQueue,
+  focusByName,
   gradeTask,
   goalInfo,
   heatmap,
@@ -28,7 +29,7 @@ import {
   updateSettings,
   weeklyReport,
 } from '../desk.js'
-import { completeTimer, pauseTimer, reconcileTimer, remainingMs, startTimer } from '../timer.js'
+import { completeTimer, makeTimer, pauseTimer, reconcileTimer, remainingMs, startTimer } from '../timer.js'
 
 const T0 = new Date(2026, 9, 8, 12, 0, 0).getTime() // 2026-10-08 12:00 本地
 const MIN = 60000
@@ -479,3 +480,54 @@ test('老数据没有 review / tags / journal 字段也能补齐', () => {
   assert.equal(s.settings.goalDate, '2026-12-19')
   assert.ok(s.settings.milestonesText.includes('预报名'))
 })
+
+// ---------------------------------------------------------------------------
+// 番茄命名 + 饼图聚合（v0.6.0）
+// ---------------------------------------------------------------------------
+
+test('focusByName 按番茄名字聚合，只算窗口内的 focus', () => {
+  const s = normalize(null)
+  logSession(s, { minutes: 25, at: T0, kind: 'focus', title: '864 论述练习' })
+  logSession(s, { minutes: 25, at: T0 - 30 * MIN, kind: 'focus', title: '864 论述练习' })
+  logSession(s, { minutes: 45, at: T0, kind: 'focus', title: '631 复习' })
+  logSession(s, { minutes: 5, at: T0, kind: 'break', title: '' })
+  logSession(s, { minutes: 25, at: T0 - 10 * 86400000, kind: 'focus', title: '背单词' })
+
+  const day = focusByName(s, 1, T0)
+  assert.deepEqual(day.map((x) => x.label), ['864 论述练习', '631 复习'])
+  assert.deepEqual(day[0], { label: '864 论述练习', minutes: 50, segments: 2 })
+  assert.equal(day[1].minutes, 45)
+
+  const month = focusByName(s, 30, T0)
+  assert.ok(month.some((x) => x.label === '背单词'))
+  assert.equal(month.reduce((m, x) => m + x.minutes, 0), 50 + 45 + 25)
+})
+
+test('focusByName 把没有名字的番茄归进「未命名」', () => {
+  const s = normalize(null)
+  logSession(s, { minutes: 25, at: T0, kind: 'focus' })
+  logSession(s, { minutes: 25, at: T0, kind: 'focus', title: '  ' })
+  const rows = focusByName(s, 1, T0)
+  assert.deepEqual(rows, [{ label: '未命名', minutes: 50, segments: 2 }])
+})
+
+test('起钟命名优先级：手写名 > 卡标题 > 兜底桶名；break 不兜底', () => {
+  const s = normalize(null)
+  const card = addTask(s, { title: '631 公共管理 · 今日复习', status: 'doing' })
+
+  const t1 = makeTimer(s, { kind: 'focus', taskId: card.id, name: '名词解释八连' }, T0)
+  assert.equal(t1.title, '名词解释八连')
+
+  const t2 = makeTimer(s, { kind: 'focus', taskId: card.id }, T0)
+  assert.equal(t2.title, '631 公共管理 · 今日复习')
+
+  const t3 = makeTimer(s, { kind: 'focus' }, T0)
+  assert.equal(t3.title, '专注（未命名）')
+
+  const t4 = makeTimer(s, { kind: 'break' }, T0)
+  assert.equal(t4.title, '')
+
+  const t5 = makeTimer(s, { kind: 'focus', name: '这个名字长得有点离谱了所以要截断到二十四个字符为止啦' }, T0)
+  assert.equal(t5.title.length, 24)
+})
+

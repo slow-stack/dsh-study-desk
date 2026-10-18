@@ -63,14 +63,17 @@ export function makeTimer(state, input, now = Date.now()) {
   const round = kind === 'focus' ? rounds + 1 : Math.max(1, rounds)
   const wanted = Number(input && input.minutes)
   const minutes = Math.max(1, Math.min(600, Math.round(Number.isFinite(wanted) && wanted > 0 ? wanted : phaseMinutes(state, kind, rounds))))
-  const task = input && input.taskId ? resolveTask(state, input.taskId) : null
+  const task = resolveTask(state, (input && (input.taskId || input.task)) || '')
+  // 番茄ToDo 式命名：session.title 是这个番茄的「户口」，饼图按它聚合——起名发生在起钟这一刻。
+  // 优先级：手动写的名字 > 挂的卡片标题 > 兜底桶名（账不丢）。
+  const custom = String((input && (input.name || input.title)) || '').trim().slice(0, 24)
   const span = minutes * MINUTE
   return {
     kind,
     minutes,
     round,
     taskId: task ? task.id : null,
-    title: task ? task.title : String((input && input.title) || ''),
+    title: custom || (task ? task.title : (kind === 'focus' ? '专注（未命名）' : '')),
     subject: task ? task.subject : String((input && input.subject) || ''),
     startedAt: now,
     endsAt: now + span,

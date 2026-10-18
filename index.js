@@ -31,6 +31,7 @@ import {
   deskDir,
   deskFile,
   dueQueue,
+  focusByName,
   goalInfo,
   gradeTask,
   heatmap,
@@ -229,6 +230,8 @@ function snapshot(state) {
     // 换来的是「浏览器端不重复实现衰减模型」——算法只有 desk.js 一个出处。
     due: queue.slice(0, 60).map((t) => ({ ...t, curve: memoryCurve(t.review, now) })),
     forecast: reviewForecast(state, 7, now),
+    // 饼图：按「这一段的名字」聚合，今天和近 30 天各算一份，客户端只画
+    focusPie: { today: focusByName(state, 1, now), month: focusByName(state, 30, now) },
     plan: reviewPlan(state, now, 3),
     tags: allTags(state),
     weekly: weeklyReport(state, 8, now),
@@ -379,7 +382,6 @@ async function handleApi(req, res) {
 // ---------------------------------------------------------------------------
 // 给模型看的摘要
 // ---------------------------------------------------------------------------
-
 function fmtMinutes(min) {
   const n = Math.max(0, Math.round(Number(min) || 0))
   if (n < 60) return n + ' 分钟'
@@ -539,12 +541,12 @@ function makeTool() {
       + '"我今天学了多久""开始 25 分钟专注""今天该复习什么""这个我忘了/记住了""帮我记一下今天的复盘""最近几周学得怎么样"'
       + '这类话时用它，而不是自己另开一份待办清单。倒计时的目标与节点由用户在设置页自己填（考试、答辩、投稿都可以）。action 取值：'
       + 'board=看当前看板全貌；add=新建卡；move=卡片换列/排序；update=改卡片字段；remove=删卡；'
-      + 'focus=起停番茄钟（给 off=true 或 minutes 控制）；stats=查最近 N 天统计；'
+      + 'focus=起停番茄钟（off=true 停；minutes 控制时长；title 给这段命名，饼图按名字聚合）；stats=查最近 N 天统计；'
       + 'review=看今日复习队列（带 id/title + grade 时改为打分）；journal=看最近复盘（带 text 时写入）；'
       + 'report=出最近若干周的复习周报；bbdc=看不背单词的打卡记录（默认读缓存，refresh=true 才重新采集）。',
     parameters: {
       action: { type: 'string', enum: STUDY_DESK_ACTIONS, description: '要做的操作' },
-      title: { type: 'string', description: '卡片标题（add 必填；move/update/remove/review 可用它代替 id 定位）' },
+      title: { type: 'string', description: '卡片标题（add 必填；move/update/remove/review 可用它代替 id 定位；focus 时它给这段番茄钟命名——饼图按名字聚合，≤24 字，如「864 论述练习」；不挂卡也不命名时记为「专注（未命名）」）' },
       id: { type: 'string', description: '卡片 id（比 title 精确）' },
       status: { type: 'string', enum: STATUSES, description: 'move/update 的目标列：todo 待办 / doing 进行中 / done 已完成' },
       subject: { type: 'string', description: '科目，如「631 公共管理」「864」「英语」「政治」' },
@@ -631,10 +633,12 @@ function makeTool() {
             const { state } = await withDesk((s) => resetTimer(s))
             return { ok: true, message: `番茄钟已停。今天已专注 ${fmtMinutes(todayMinutes(state))}。` }
           }
+          const taskRef = args.task
+          const named = String(args.title || '').trim().slice(0, 24)
           const { state, result } = await withDesk((s) => startTimer(s, {
             minutes: args.minutes,
-            taskId: args.task,
-            title: args.task && !s.tasks.some((t) => t.id === args.task) ? undefined : undefined,
+            taskId: taskRef,
+            name: named || undefined,
           }))
           const s = summary(state)
           return {
