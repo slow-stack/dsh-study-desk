@@ -1,6 +1,6 @@
 # dsh-study-desk
 
-一个跑在 DeepSeek Harness（DSH）里的学习工作台：待办墙、间隔重复复习、按**实际复习时长**点亮的热力图与周报、番茄钟、每日复盘。数据是本机一个可读可改可版本化的 JSON，另可导成 Markdown 进 Obsidian。
+一个跑在 DeepSeek Harness（DSH）里的学习工作台：待办墙、间隔重复复习、按**实际复习时长**点亮的热力图与周报、番茄钟、每日复盘，外加一个把**不背单词**打卡记录接进来的独立面板。数据是本机一个可读可改可版本化的 JSON，另可导成 Markdown 进 Obsidian。
 
 [![npm](https://img.shields.io/npm/v/dsh-study-desk?style=flat&label=npm&color=blue)](https://www.npmjs.com/package/dsh-study-desk)
 [![CI](https://img.shields.io/github/actions/workflow/status/slow-stack/dsh-study-desk/ci.yml?branch=master&style=flat&label=CI)](https://github.com/slow-stack/dsh-study-desk/actions/workflows/ci.yml)
@@ -31,6 +31,7 @@
 | 每日复盘 | 一天一条短记录：今天卡在哪、明天第一件事 |
 | 番茄钟 | 专注 / 短休 / 长休自动轮换；换面板、刷新、关掉再打开都按绝对截止时间恢复。**起钟要报名字**（手写的名字优先，其次用挂的卡片标题） |
 | 番茄分布 | 环形饼图，按番茄的名字聚合时长，可切「今天 / 近 30 天」——一眼看出时间花去哪了（番茄ToDo 那张饼的思路） |
+| 单词打卡 | 侧栏第二个面板：连续签到、累计天数与时长、累计词数、逐月打卡日历、正在学的词书与今日计划。数据从本机不背单词 App 的 `shared_prefs` 读，**不登录网页端、不回写 App**，凭据只留前 10 位 |
 | 常驻迷你条 | 右下角一个小胶囊，在对话页也能看见剩余时间、今日进度和到期张数。能拖到任意位置并停在原地（松手不再贴边，只会被收回屏幕内），双击回右下角，也能收起成小圆点 |
 
 界面**只消费**宿主的 `--dsw-alias-*` / `--dsw-static-*` 主题 token，不覆写任何 token、不写死任何颜色。换主题（含 catppuccin 之类的 remap）它跟着变，明暗两套都成立。
@@ -77,7 +78,7 @@ settings    每日目标、专注与休息时长、打卡门槛、复习队列�
 
 ## 让模型直接动手
 
-插件给模型一个 `study_desk` 工具（10 个 action），所以你可以直接说「今天该复习什么」「这个我忘了」「把第 3 章拉进复习」「帮我记一下今天的复盘」「最近四周学得怎么样」。
+插件给模型一个 `study_desk` 工具（11 个 action），所以你可以直接说「今天该复习什么」「这个我忘了」「把第 3 章拉进复习」「帮我记一下今天的复盘」「最近四周学得怎么样」。
 
 | action | 作用 |
 | --- | --- |
@@ -87,6 +88,7 @@ settings    每日目标、专注与休息时长、打卡门槛、复习队列�
 | `focus` | 起停番茄钟 |
 | `stats` / `report` | 最近 N 天统计 / 最近 N 周周报 |
 | `journal` | 读最近的复盘；带 `text` 写入某天 |
+| `bbdc` | 不背单词打卡记录；`refresh=true` 重新采集，`offline=true` 只读本机缓存 |
 
 另外每轮对话会往系统提示里注入一小段「距目标几天 / 今天专注多少 / 进行中是什么 / 今天该复习几张 / 昨天卡在哪」，让模型说话时知道你在哪。不想要就在设置页关掉（省一点上下文）。
 
