@@ -196,3 +196,36 @@ node install.mjs --profile <profile 目录> --uninstall
 它会：备份 profile 的 `package.json` → 加 `link:` 依赖 → 把包名加进 `dsh.profile.bundles`
 → 跑一次 pnpm install → 校验 junction 指回本目录。
 装完**新开一个会话**：DSH 的工具表是会话开始时的快照，新增的工具要新会话才会加载。
+
+## 发版
+
+`package.json` 的 `version` 是唯一真相，tag 用 `v<版本>`，CHANGELOG 顶部加一段。三处对齐后：
+
+```bash
+git tag -a v0.6.1 -m 'v0.6.1' && git push origin master v0.6.1
+gh release create v0.6.1 --title '…' --notes-file <文件>
+```
+
+**npm 发布目前只能在本机跑，不能走 `release.yml`。** 原因是 2026-07-31 起 npm 把
+「敏感账号 / 包管理操作」收回到交互式 2FA 后面（见
+`https://gh.io/npm-gat-bypass2fa-deprecation`）：`npm trust github …` 用本机的 granular
+access token 调 `POST /-/package/<pkg>/trust` 会 403
+（`Granular access tokens that bypass two-factor authentication may not perform this action`）。
+于是 `release.yml` 的 OIDC 发布在没有 trusted publisher 时必然 404 —— 它签名、上传都走到了，
+只是 registry 不认这个来源。第一次用之前必须**在浏览器里**（带 2FA）到
+`https://www.npmjs.com/package/dsh-study-desk/settings` 加一条 Trusted Publisher：
+repo `slow-stack/dsh-study-desk`、workflow `release.yml`、允许 publish。
+配好之前，用本机 token 直发：
+
+```bash
+npm publish --access public --no-provenance
+```
+
+（`--no-provenance` 必须带：本机不在 Actions 里，默认的 provenance 会失败；`--no-git-checks`
+在新版 npm 里已经不是合法 flag 了，别抄老命令。）发完等半分钟到一分钟再 `npm view` 验证，
+registry 的 packument 有缓存延迟。
+
+**另一个坑**：`npm publish` 只认 `files` 白名单里的东西，但 `CHANGELOG.md` / `README.md` /
+`LICENSE` 是 npm 强制带上的。所以 `npm pack` 的 `total files` 会比白名单多几条 —— CI 里那条
+断言是**逐个核对白名单里的文件都在**，不是数总数。
+
