@@ -36,11 +36,14 @@ import {
   heatmap,
   journalRecent,
   logSession,
+  memoryCurve,
   minutesByTask,
   nextMilestone,
   readDesk,
   removeTask,
   reorderTask,
+  reviewForecast,
+  reviewPlan,
   reviewStats,
   scheduleTask,
   setJournal,
@@ -210,6 +213,7 @@ function snapshot(state) {
   const minutes = {}
   for (const [id, m] of byTask) minutes[id] = m
   const now = Date.now()
+  const queue = dueQueue(state, now)
   return {
     ok: true,
     now,
@@ -220,7 +224,11 @@ function snapshot(state) {
     focusRoundsToday: countFocusToday(state),
     // 派生数据由 desk.js 单点算好：客户端那份是浏览器里的另一套代码，不该再实现一遍排序与聚合
     review: reviewStats(state, now),
-    due: dueQueue(state, now).slice(0, 60),
+    // 曲线也在这里算：一次快照最多 60 条，每条 31 个点的整数数组，几十 KB 以内，
+    // 换来的是「浏览器端不重复实现衰减模型」——算法只有 desk.js 一个出处。
+    due: queue.slice(0, 60).map((t) => ({ ...t, curve: memoryCurve(t.review, now) })),
+    forecast: reviewForecast(state, 7, now),
+    plan: reviewPlan(state, now, 3),
     tags: allTags(state),
     weekly: weeklyReport(state, 8, now),
     journal: journalRecent(state, now, 14),

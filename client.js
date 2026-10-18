@@ -137,6 +137,8 @@ window.__ModuleLoader__.load({
       // 派生数据由宿主算好（desk.js 是唯一的算法出处，浏览器里不再实现一遍）
       review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
       due: [],
+      forecast: { days: [], later: 0, total: 0, max: 0 },
+      plan: { items: [], due: 0, cap: 10, advice: null },
       tags: [],
       weekly: { weeks: [], goalWeekly: 0 },
       journalLog: [],
@@ -168,6 +170,8 @@ window.__ModuleLoader__.load({
         this.focusRoundsToday = json.focusRoundsToday || 0
         this.review = json.review || this.review
         this.due = json.due || []
+        this.forecast = json.forecast || this.forecast
+        this.plan = json.plan || this.plan
         this.tags = json.tags || []
         this.weekly = json.weekly || this.weekly
         this.journalLog = json.journal || []
@@ -1012,6 +1016,117 @@ window.__ModuleLoader__.load({
       ])
     }
 
+
+    // -----------------------------------------------------------------------
+    // 遗忘曲线 / 到期预报 / 今日建议
+    // -----------------------------------------------------------------------
+
+    /**
+     * 单卡记忆强度小图：把宿主算好的 0..100 点数组画成折线，
+     * 并在「今天」和「到期那天」各打一根竖线。纯 SVG，没有依赖。
+     */
+    function MemoryCurve({ curve, width, height }) {
+      if (!curve || !Array.isArray(curve.points) || curve.points.length < 2) return null
+      const w = width || 66
+      const ht = height || 20
+      const pad = 1.5
+      const pts = curve.points
+      const n = pts.length - 1
+      const x = (i) => pad + (i / n) * (w - pad * 2)
+      const y = (v) => pad + (1 - v / 100) * (ht - pad * 2)
+      const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
+      const flat = (ht - pad).toFixed(1)
+      const area = `${x(0).toFixed(1)},${flat} ${line} ${x(n).toFixed(1)},${flat}`
+      const retention = Number(curve.todayRetention) || 0
+      const tone = retention >= 80 ? 'ok' : retention >= 60 ? 'warn' : 'late'
+      return h('svg', {
+        className: 'sd-curve sd-curve-' + tone,
+        width: w, height: ht, viewBox: `0 0 ${w} ${ht}`,
+        role: 'img',
+        'aria-label': `记忆强度约 ${retention}%，稳定度约 ${curve.stabilityDays} 天`,
+      }, [
+        h('polygon', { key: 'a', className: 'sd-curve-area', points: area }),
+        h('polyline', { key: 'l', className: 'sd-curve-line', points: line }),
+        curve.dueIndex === null || curve.dueIndex === undefined ? null : h('line', {
+          key: 'd',
+          className: 'sd-curve-due',
+          x1: x(curve.dueIndex).toFixed(1), x2: x(curve.dueIndex).toFixed(1),
+          y1: pad, y2: flat,
+        }),
+        h('circle', {
+          key: 't',
+          className: 'sd-curve-dot',
+          cx: x(curve.todayIndex || 0).toFixed(1),
+          cy: y(pts[curve.todayIndex || 0]).toFixed(1),
+          r: 1.8,
+        }),
+      ])
+    }
+
+    /** 未来 7 天到期预报：柱子高度就是那天要过几张，逾期一律算进今天。 */
+    function Forecast() {
+      const s = useStore()
+      const f = s.forecast || {}
+      const days = f.days || []
+      if (!days.length) return null
+      const max = Math.max(f.max || 0, 1)
+      const today = days[0] || { count: 0 }
+      const busiest = days.reduce((m, d) => (d.count > m.count ? d : m), days[0])
+      const tail = [
+        today.count ? `今天 ${today.count} 张` : '今天清空',
+        f.later ? `7 天后还有 ${f.later} 张` : '',
+        busiest && busiest.count > 0 && !busiest.isToday ? `峰值 ${busiest.key.slice(5)} 共 ${busiest.count} 张` : '',
+      ].filter(Boolean).join(' · ')
+      return h('div', { className: 'sd-forecast' }, [
+        h('span', { className: 'sd-forecast-cap', key: 'c' }, '未来 7 天'),
+        h('div', { className: 'sd-forecast-bars', key: 'b' }, days.map((d) => h('div', {
+          key: d.key,
+          className: 'sd-fbar' + (d.isToday ? ' today' : ''),
+          title: `${d.key}：${d.count} 张${d.overdue ? `（含逾期 ${d.overdue} 张）` : ''}`,
+        }, [
+          h('span', { className: 'sd-fbar-n', key: 'n' }, d.count ? String(d.count) : ''),
+          h('div', { className: 'sd-fbar-track', key: 't' },
+            h('div', {
+              className: 'sd-fbar-fill',
+              style: { height: (d.count ? Math.max(12, Math.round((d.count / max) * 100)) : 0) + '%' },
+            })),
+          h('span', { className: 'sd-fbar-label', key: 'l' }, d.isToday ? '今天' : d.key.slice(5).replace('-', '/')),
+        ]))),
+        h('span', { className: 'sd-forecast-tail', key: 's' }, tail),
+      ])
+    }
+
+    /** 今日建议：从到期队列里挑出最该先做的几张，并写明理由（打分口径在 desk.js:reviewPlan）。 */
+    function PlanStrip() {
+      const s = useStore()
+      const plan = s.plan || {}
+      const items = plan.items || []
+      const [open, setOpen] = React.useState(true)
+      if (!plan.advice && !items.length) return null
+      return h('div', { className: 'sd-plan' }, [
+        h('div', { className: 'sd-plan-head', key: 'h' }, [
+          h(Icon, { name: 'flame', size: 13, key: 'i' }),
+          h('span', { className: 'sd-plan-title', key: 't' }, '今日建议'),
+          h('button', {
+            key: 'x',
+            className: 'sd-plan-toggle',
+            onClick: () => setOpen(!open),
+          }, open ? '收起' : '展开'),
+        ]),
+        plan.advice ? h('div', { className: 'sd-plan-advice', key: 'a' }, plan.advice) : null,
+        open && items.length
+          ? h('ol', { className: 'sd-plan-list', key: 'l' }, items.map((it, i) => h('li', {
+            key: it.id, className: 'sd-plan-item',
+          }, [
+            h('span', { className: 'sd-plan-rank', key: 'r' }, String(i + 1)),
+            h('span', { className: 'sd-plan-name', key: 'n', title: it.title }, it.title),
+            it.subject ? h('span', { className: 'sd-tag', key: 's' }, it.subject) : null,
+            h('span', { className: 'sd-plan-reason', key: 'y' }, it.reason),
+          ])))
+          : null,
+      ])
+    }
+
     // -----------------------------------------------------------------------
     // 今日复习队列
     // -----------------------------------------------------------------------
@@ -1038,6 +1153,7 @@ window.__ModuleLoader__.load({
             ? `排期 ${st.scheduled} 张 · 待过 ${st.due}（逾期 ${st.overdue}）· 今天已打分 ${st.doneToday} 次 · 本周 ${st.weekDone} 次`
             : '还没有卡进入复习循环'),
         ]),
+        h(PlanStrip, { key: 'p' }),
         shown.length
           ? h('div', { className: 'sd-review-list', key: 'l' }, shown.map((t) => h('div', { className: 'sd-review-row', key: t.id }, [
             h('div', { className: 'sd-review-main', key: 'm' }, [
@@ -1045,6 +1161,14 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sd-review-meta', key: 'b' }, [
                 t.subject ? h('span', { className: 'sd-tag', key: 's' }, t.subject) : null,
                 h('span', { className: 'sd-due late', key: 'd' }, dueLabel(t.review.due)),
+                t.curve ? h('span', {
+                  className: 'sd-review-curve',
+                  key: 'c',
+                  title: `记忆稳定度约 ${t.curve.stabilityDays} 天（横轴 ${t.curve.spanDays} 天，虚线是排期那天，圆点是今天）`,
+                }, [
+                  h(MemoryCurve, { key: 'g', curve: t.curve, width: 66, height: 20 }),
+                  h('span', { className: 'sd-review-mem', key: 'm' }, `记忆 ${t.curve.todayRetention}%`),
+                ]) : null,
                 h('span', { className: 'sd-review-cap', key: 'r' }, `第 ${t.review.reps + 1} 遍 · 上次间隔 ${t.review.intervalDays} 天 · 难度 ${t.review.ease}`),
               ]),
             ]),
@@ -1062,6 +1186,7 @@ window.__ModuleLoader__.load({
             ? '今天该复习的都过完了。想加练就把更多卡拉进复习循环（卡片右下角的 ↻）。'
             : '在卡片上点 ↻ 把它拉进复习循环。政治选择题、英语单词、专业课名词解释最适合这套：'
               + '「忘了」今天再来一遍，「记得」按难度把间隔越拉越长。'),
+        h(Forecast, { key: 'f' }),
         queue.length > shown.length
           ? h('div', { className: 'sd-review-more', key: 'm' }, `队列里还有 ${queue.length - shown.length} 张没摆出来（每次摆几张在设置页里调）`)
           : null,
@@ -1745,6 +1870,41 @@ window.__ModuleLoader__.load({
       '.sd-grade.good{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,transparent)}',
       '.sd-grade.easy{color:var(--dsw-alias-state-success-primary)}',
       '.sd-review-more{font-size:11px;color:var(--dsw-alias-label-dimmed)}',
+      // 遗忘曲线：颜色跟着「今天还剩多少记忆」走，绿=还稳、蓝=该看了、红=快塌了
+      '.sd-curve{flex:none;overflow:visible}',
+      '.sd-curve-line{fill:none;stroke:currentColor;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round}',
+      '.sd-curve-area{fill:currentColor;stroke:none;opacity:.13}',
+      '.sd-curve-due{stroke:currentColor;stroke-width:1;stroke-dasharray:2 2;opacity:.55}',
+      '.sd-curve-dot{fill:currentColor}',
+      '.sd-curve-ok{color:var(--dsw-alias-state-success-primary)}',
+      '.sd-curve-warn{color:var(--dsw-alias-brand-primary)}',
+      '.sd-curve-late{color:var(--dsw-alias-state-error-primary)}',
+      '.sd-review-curve{display:inline-flex;align-items:center;gap:5px}',
+      '.sd-review-mem{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      // 今日建议
+      '.sd-plan{display:flex;flex-direction:column;gap:6px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent);border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent);padding:8px 10px}',
+      '.sd-plan-head{display:flex;align-items:center;gap:6px;font-size:12px}',
+      '.sd-plan-title{font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.sd-plan-toggle{margin-left:auto;border:none;background:none;color:var(--dsw-alias-label-tertiary);font-size:11px;cursor:pointer;padding:0 2px;font-family:inherit}',
+      '.sd-plan-toggle:hover{color:var(--dsw-alias-label-primary)}',
+      '.sd-plan-advice{font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
+      '.sd-plan-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}',
+      '.sd-plan-item{display:flex;align-items:center;gap:7px;font-size:12px;min-width:0}',
+      '.sd-plan-rank{flex:none;width:1.35em;height:1.35em;border-radius:50%;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base);font-size:10px;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}',
+      '.sd-plan-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
+      '.sd-plan-reason{flex:none;color:var(--dsw-alias-label-dimmed);font-size:11px}',
+      // 未来 7 天到期预报
+      '.sd-forecast{display:flex;align-items:flex-end;gap:9px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;flex-wrap:wrap}',
+      '.sd-forecast-cap{font-size:11px;color:var(--dsw-alias-label-dimmed);flex:none;padding-bottom:2px}',
+      '.sd-forecast-bars{display:flex;align-items:flex-end;gap:5px;height:62px;flex:none}',
+      '.sd-fbar{width:26px;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px}',
+      '.sd-fbar-track{flex:1;width:100%;max-width:20px;display:flex;align-items:flex-end;border-radius:5px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
+      '.sd-fbar-fill{width:100%;border-radius:5px 5px 0 0;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);transition:height .3s ease}',
+      '.sd-fbar.today .sd-fbar-fill{background:var(--dsw-alias-brand-primary)}',
+      '.sd-fbar-n{font-size:9.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:11px;line-height:11px}',
+      '.sd-fbar-label{font-size:9.5px;color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-fbar.today .sd-fbar-label{color:var(--dsw-alias-label-secondary)}',
+      '.sd-forecast-tail{font-size:11px;color:var(--dsw-alias-label-tertiary);flex:1;min-width:8em;padding-bottom:2px}',
       // 周报
       '.sd-weeks{display:flex;align-items:flex-end;gap:6px;height:104px}',
       '.sd-week{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}',

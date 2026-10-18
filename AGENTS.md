@@ -21,7 +21,7 @@
 
 | 文件 | 是什么 |
 | --- | --- |
-| `desk.js` | 纯数据层：读写 `desk.json`、任务增删改排、**间隔重复排期（简化 SM-2）**、标签归一化、日复盘、热力图分档、连续打卡、周报、按科目统计。**不依赖 dsh 运行时，可独立单测。** |
+| `desk.js` | 纯数据层：读写 `desk.json`、任务增删改排、**间隔重复排期（简化 SM-2）**、**遗忘曲线 / 到期预报 / 今日建议**、标签归一化、日复盘、热力图分档、连续打卡、周报、按科目统计。**不依赖 dsh 运行时，可独立单测。** |
 | `markdown.js` | Markdown 导出 / 读回（纯函数）：`toMarkdown` 生成 Obsidian 友好的 `desk.md`，`fromMarkdown` + `mergeMarkdown` 按 id 合并读回。机器字段放在行尾 `<!-- desk:… -->` 注释里。 |
 | `timer.js` | 番茄钟状态机：`start/pause/resume/reset/complete/reconcile`。真相是绝对时间戳，不用「还剩多少毫秒」。 |
 | `index.js` | **宿主半边**：`study_desk` 工具（10 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要。派生数据（复习队列/统计/周报/标签）一律由 desk.js 算好再随快照发出。 |

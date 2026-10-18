@@ -251,6 +251,31 @@ check('POST markdown.import 增卡并带笔记', () => {
   assert.equal(t.note, '手写的笔记')
 })
 
+// 遗忘曲线 / 到期预报 / 今日建议：宿主算好随快照发出，客户端只管画
+const p11 = await post({ op: 'review.grade', title: 'POST 加的卡', grade: 'again' })
+check('再打一次「忘了」→ 卡回到今天，快照带遗忘曲线', () => {
+  const j = JSON.parse(p11.body)
+  const card = j.due.find((t) => t.title === 'POST 加的卡')
+  assert.ok(card, '忘了的卡应该回到今天的到期队列')
+  assert.equal(card.curve.points.length, 31)
+  assert.ok(card.curve.points.every((p) => Number.isInteger(p) && p >= 0 && p <= 100), '曲线点必须是 0..100 的整数')
+  assert.equal(card.curve.dueIndex, card.curve.todayIndex)
+  assert.equal(card.curve.samples, 30)
+  assert.equal(typeof card.curve.todayRetention, 'number')
+  assert.equal(typeof card.curve.stabilityDays, 'number')
+
+  assert.equal(j.forecast.days.length, 7)
+  assert.equal(j.forecast.days[0].isToday, true)
+  assert.ok(j.forecast.total >= 1)
+  assert.ok(j.forecast.max >= 1)
+
+  assert.equal(j.plan.cap, 10)
+  assert.ok(j.plan.advice.length > 0)
+  assert.ok(j.plan.items.length >= 1)
+  assert.ok(j.plan.items.some((i) => i.title === 'POST 加的卡'))
+  assert.ok(j.plan.items.every((i) => typeof i.reason === 'string' && i.reason.length > 0))
+})
+
 // 客户端诊断通道：不碰 desk.json，只追加 diag 文件
 const d1 = await post({ op: 'diag.report', kind: 'boot', where: 'probe', message: '来自探针' })
 check('POST diag.report 200', () => assert.equal(d1.code, 200))
