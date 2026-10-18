@@ -65,3 +65,15 @@ jobs:
         run: |
           ! grep -rnE 'C:[\\]+Users|/home/[a-z0-9_]+' \
             --include='*.js' --include='*.mjs' --include='*.json' --include='*.md' --include='*.yml' .
+
+      # 见 AGENTS.md 的「换行必须锁死」：工作区是 CRLF 时，本机 npm pack 与 CI 打包出来的
+      # 字节不一样，同一个 tag 装出两份东西。.gitattributes 锁 LF，这条守着它别被悄悄破掉。
+      - name: 工作区换行必须是 LF
+        run: |
+          # 只看 git 认定的文本文件：png 这类二进制自带 0x0D，用字节扫描会误报。
+          # w/crlf 或 w/mixed 说明检出时被 core.autocrlf 改造过。
+          if git ls-files --eol | grep -E 'w/(crlf|mixed)'; then
+            echo '上面这些文件在工作区里是 CRLF，应为 LF：检查 .gitattributes 或重跑 git checkout -- .'
+            exit 1
+          fi
+          echo '工作区换行全部是 LF'

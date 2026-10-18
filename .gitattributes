@@ -1,0 +1,11 @@
+# 统一换行：仓库里一律 LF，检出一律 LF，忽略各机器的 core.autocrlf。
+# 否则同一 tag 在本机打包（CRLF）与 CI 打包（LF）会产出字节不同的 tarball。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.tgz binary

@@ -206,16 +206,35 @@ git tag -a v0.6.1 -m 'v0.6.1' && git push origin master v0.6.1
 gh release create v0.6.1 --title '…' --notes-file <文件>
 ```
 
-**npm 发布目前只能在本机跑，不能走 `release.yml`。** 原因是 2026-07-31 起 npm 把
-「敏感账号 / 包管理操作」收回到交互式 2FA 后面（见
+### 走哪条路
+
+两条都通，**优先走 `release.yml`**（带 provenance 签名，包的可信度更高）：
+
+1. **Actions 触发（首选）**：Trusted Publisher 登记好之后，`gh workflow run release.yml --ref <tag>`，
+   OIDC 自动认证，不需要任何 token。
+2. **本机直发（兜底）**：本机 token 发布，不带 provenance。
+
+Trusted Publisher 已于 2026-10-18 登记完成（repo `slow-stack/dsh-study-desk`、
+workflow `release.yml`、允许 publish），**实测认证已通过**：复验那次失败在
+`You cannot publish over the previously published versions: 0.6.1` —— 那是版本号已被本机
+直发占用，不是配置问题。真正验证 OIDC 全链路要等下一个新版本号。
+
+顺手记下第一次（未登记时）的报错形状，以后好区分：
+`npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-study-desk`，而日志里
+`Signed provenance statement` 已经成功。签名过了却被 registry 拒绝，就是没登记；
+**这种 404 不是版本冲突，别被它骗去改版本号。**
+
+### Trusted Publisher 只能用浏览器配
+
+2026-07-31 起 npm 把「敏感账号 / 包管理操作」收回到交互式 2FA 后面（见
 `https://gh.io/npm-gat-bypass2fa-deprecation`）：`npm trust github …` 用本机的 granular
 access token 调 `POST /-/package/<pkg>/trust` 会 403
-（`Granular access tokens that bypass two-factor authentication may not perform this action`）。
-于是 `release.yml` 的 OIDC 发布在没有 trusted publisher 时必然 404 —— 它签名、上传都走到了，
-只是 registry 不认这个来源。第一次用之前必须**在浏览器里**（带 2FA）到
-`https://www.npmjs.com/package/dsh-study-desk/settings` 加一条 Trusted Publisher：
-repo `slow-stack/dsh-study-desk`、workflow `release.yml`、允许 publish。
-配好之前，用本机 token 直发：
+（`Granular access tokens that bypass two-factor authentication may not perform this action`），
+`npm trust list` 同样 403。CLI 补登记这条路是死的，只能去浏览器点。
+GAT 从 2027-01 起会失去直接发布权，届时第 2 条路就断了，提前把第 1 条走顺有实际意义。
+登记入口：`https://www.npmjs.com/package/dsh-study-desk/settings`。
+
+### 本机直发
 
 ```bash
 npm publish --access public --no-provenance
@@ -228,4 +247,31 @@ registry 的 packument 有缓存延迟。
 **另一个坑**：`npm publish` 只认 `files` 白名单里的东西，但 `CHANGELOG.md` / `README.md` /
 `LICENSE` 是 npm 强制带上的。所以 `npm pack` 的 `total files` 会比白名单多几条 —— CI 里那条
 断言是**逐个核对白名单里的文件都在**，不是数总数。
+
+### 换行必须锁死（.gitattributes）
+
+仓库用 `.gitattributes` 的 `* text=auto eol=lf` 把换行锁成 LF，**不要删**。
+
+以前没有这个文件、而本机全局 `core.autocrlf=true`，于是同一份代码在磁盘上是 CRLF、在 git blob
+里是 LF。后果是 `npm pack` 在两条路径上产出**字节不同的包**：
+
+| 路径 | client.js | unpacked | shasum |
+| --- | --- | --- | --- |
+| 本机（工作区 CRLF） | 149009 | 329.2 kB | `68b6decc…` |
+| CI（checkout LF） | 146342 | 322.9 kB | `35fbedd7…` |
+
+两个包都能跑（单测都过），但「同一个 tag 装出来的东西」不可复现，也排查不清楚。
+加 `.gitattributes` 之后，重新检出的工作区已经是 146342 字节，与 blob 一致。
+
+改完 `.gitattributes` 或怀疑换行跑偏时，用这条核对——它应该输出 0 个不一致：
+
+```bash
+cd D:\dsh-study-desk
+for f in $(git ls-files); do
+  a=$(wc -c < "$f"); b=$(git cat-file -s HEAD:$f)
+  [ "$a" != "$b" ] && echo "DIFF $f worktree=$a blob=$b"
+done
+```
+
+已经 CRLF 的工作区不会自己变过来，需要删掉文件重新 `git checkout -- .`。
 

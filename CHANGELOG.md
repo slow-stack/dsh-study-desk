@@ -2,6 +2,20 @@
 
 格式随版本号走；`package.json` 的 version 是唯一真相，tag 用 `v<版本>`。
 
+## 未发布
+
+工程修正，没有功能变化。
+
+- **换行锁成 LF**：新增 `.gitattributes`（`* text=auto eol=lf`）。此前仓库没有这个文件，而
+  本机全局 `core.autocrlf=true`，导致磁盘上是 CRLF、git blob 里是 LF，于是 `npm pack` 在
+  本机与 CI 两条路径上产出字节不同的包（同 tag 下 client.js 149009 vs 146342 字节，
+  unpacked 329.2 kB vs 322.9 kB）。现在两边一致。
+- **CI 补一道换行守卫**：可移植性 job 新增「工作区换行必须是 LF」，用 `git ls-files --eol`
+  找 `w/crlf` / `w/mixed`。只看 git 认定的文本文件，png 这类二进制不会误报。
+- 文档同步：`AGENTS.md` 的「发版」一节改写为「优先走 `release.yml`」，补上 Trusted Publisher
+  已于 2026-10-18 登记、认证实测可用，以及「未登记时的 404 不是版本冲突」这条区分特征；
+  新增「换行必须锁死」小节。`README` 的发布说明同步。
+
 ## v0.6.1
 
 迷你条改成「拖到哪就停在哪」，并把两个会悄悄吃掉数据的坑补上。

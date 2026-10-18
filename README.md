@@ -104,7 +104,7 @@ node install.mjs --check
 `desk.js` / `markdown.js` / `timer.js` 是纯函数层，不依赖 DSH 运行时，所以能独立单测。
 改完怎么让跑着的 DSH 认、以及三个踩出来的坑与设计约束，都在 [`AGENTS.md`](AGENTS.md) 里。
 
-CI（GitHub Actions）在每次 push / PR 跑单测与冒烟（Node 22、24），并检查 `cordis.patch.yml` 是可移植的裸包名、代码里没有本机绝对路径。npm 发布是**手动触发**的 workflow——发出去的版本删不掉，所以不跟 tag 自动联动。该 workflow 走 OIDC trusted publishing，首次使用前要在 npm 包设置里登记这条 workflow（仓库、文件名 `release.yml`、允许 publish）；没登记时只能用本机 token 直发。细节见 [`AGENTS.md`](AGENTS.md) 的「发版」一节。更新记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+CI（GitHub Actions）在每次 push / PR 跑单测与冒烟（Node 22、24），并检查 `cordis.patch.yml` 是可移植的裸包名、代码里没有本机绝对路径。npm 发布是**手动触发**的 workflow——发出去的版本删不掉，所以不跟 tag 自动联动。该 workflow 走 OIDC trusted publishing（仓库、文件名 `release.yml`、允许 publish，已在 npm 包设置里登记，认证实测可用）；没登记时它会失败在 `404 Not Found` 上。仓库用 `.gitattributes` 把换行锁成 LF，保证本机与 CI 打出的包字节一致。细节见 [`AGENTS.md`](AGENTS.md) 的「发版」一节。更新记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 已知限制
 
