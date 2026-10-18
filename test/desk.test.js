@@ -11,10 +11,13 @@ import {
   heatmap,
   journalRecent,
   logSession,
+  memoryCurve,
   normalize,
   normalizeTags,
   parseMilestones,
   reorderTask,
+  reviewForecast,
+  reviewPlan,
   reviewStats,
   scheduleTask,
   setJournal,
@@ -238,6 +241,149 @@ test('到期队列按逾期程度排，已完成的卡也照样复习', () => {
   assert.equal(sum.due[0].title, '英语阅读技巧')
   assert.equal(sum.due[0].overdueDays, 1)
   assert.equal(sum.journal.today, '')
+})
+
+// ---------------------------------------------------------------- 遗忘曲线 / 到期预报 / 今日建议
+
+const DAY = 86400000
+const rev = (o = {}) => ({ due: null, intervalDays: 0, ease: 2.5, reps: 0, lapses: 0, lastAt: null, ...o })
+
+test('记忆曲线：到期那天正好落到 90%，稳定度高的卡更平', () => {
+  const due = memoryCurve(rev({ due: '2026-10-08', intervalDays: 6, reps: 2, lastAt: T0 - 6 * DAY }), T0)
+  assert.equal(due.points.length, 31)
+  assert.equal(due.spanDays, 30)
+  assert.equal(due.stabilityDays, 56.9)
+  assert.equal(due.todayRetention, 90)
+  assert.equal(due.todayIndex, 6)
+  assert.equal(due.dueIndex, 6)
+  assert.ok(due.points.every((p) => Number.isInteger(p) && p >= 0 && p <= 100))
+  for (let i = 1; i < due.points.length; i += 1) {
+    assert.ok(due.points[i] <= due.points[i - 1], `第 ${i} 点比前一点还高：曲线不该回弹`)
+  }
+
+  // 横轴一样长，所以「30 天后还剩多少」可以直接比大小 —— 这张图的意义就在这
+  const steady = memoryCurve(rev({ due: '2026-11-08', intervalDays: 60, lastAt: T0 }), T0)
+  const fresh = memoryCurve(rev({ due: '2026-10-09', intervalDays: 1, lastAt: T0 }), T0)
+  assert.equal(steady.points[0], 100)
+  assert.equal(fresh.points[0], 100)
+  assert.ok(steady.points[30] > fresh.points[30], `稳的 ${steady.points[30]} 该高于脆的 ${fresh.points[30]}`)
+})
+
+test('记忆曲线：没排过期的卡按一天一过画，忘过的更陡', () => {
+  const plain = memoryCurve(rev(), T0)
+  const lapsed = memoryCurve(rev({ lapses: 3 }), T0)
+  assert.equal(plain.stabilityDays, 9.5)
+  assert.equal(lapsed.stabilityDays, 4.7)
+  assert.ok(lapsed.points[15] < plain.points[15])
+  assert.equal(plain.todayRetention, 100)
+
+  const blank = memoryCurve(null, T0)
+  assert.equal(blank.points.length, 31)
+  assert.equal(blank.dueIndex, null)
+  assert.equal(blank.todayRetention, 100)
+})
+
+test('记忆曲线：逾期很久横轴自动放宽，最多 90 天', () => {
+  const long = memoryCurve(rev({ due: '2026-08-08', intervalDays: 6, lastAt: T0 - 60 * DAY }), T0)
+  assert.equal(long.spanDays, 67)
+  assert.equal(long.todayIndex, 27)
+  const ancient = memoryCurve(rev({ intervalDays: 6, lastAt: T0 - 200 * DAY }), T0)
+  assert.equal(ancient.spanDays, 90)
+  assert.equal(ancient.todayIndex, 30)
+  assert.ok(ancient.todayRetention <= 5, `200 天没碰，记忆只剩 ${ancient.todayRetention}%`)
+})
+
+test('到期预报：逾期都算今天，7 天之外单独数', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '逾期两天' })
+  const b = addTask(s, { title: '今天' })
+  const c = addTask(s, { title: '三天后' })
+  const d = addTask(s, { title: '一个月后' })
+  addTask(s, { title: '压根没排期' })
+  scheduleTask(s, a.id, '2026-10-06', T0)
+  scheduleTask(s, b.id, '2026-10-08', T0)
+  scheduleTask(s, c.id, '2026-10-11', T0)
+  scheduleTask(s, d.id, '2026-11-08', T0)
+
+  const f = reviewForecast(s, 7, T0)
+  assert.equal(f.days.length, 7)
+  assert.equal(f.days[0].key, '2026-10-08')
+  assert.equal(f.days[0].isToday, true)
+  assert.equal(f.days[0].count, 2)
+  assert.equal(f.days[0].overdue, 1)
+  assert.equal(f.days[3].key, '2026-10-11')
+  assert.equal(f.days[3].count, 1)
+  assert.equal(f.days[6].key, '2026-10-14')
+  assert.equal(f.later, 1)
+  assert.equal(f.total, 3)
+  assert.equal(f.max, 2)
+
+  assert.deepEqual(reviewForecast(s, 1, T0).days.map((x) => x.count), [2])
+  assert.equal(reviewForecast(s, 99, T0).days.length, 30)
+  assert.equal(reviewForecast(normalize(null), 7, T0).total, 0)
+})
+
+test('今日建议：按科目轮换、写明理由、量太大劝她别硬扛', () => {
+  const s = normalize(null)
+  const old631 = addTask(s, { title: '名词解释：新公共管理', subject: '631 公共管理' })
+  const old864 = addTask(s, { title: '数字治理', subject: '864' })
+  const eng = addTask(s, { title: '长难句拆分', subject: '英语' })
+  scheduleTask(s, old631.id, '2026-10-05', T0)
+  scheduleTask(s, old864.id, '2026-10-07', T0)
+  scheduleTask(s, eng.id, '2026-10-08', T0)
+
+  const p = reviewPlan(s, T0, 3)
+  assert.equal(p.due, 3)
+  assert.equal(p.cap, 10)
+  assert.equal(p.items.length, 3)
+  assert.deepEqual(p.items.map((i) => i.subject), ['631 公共管理', '864', '英语'])
+  assert.equal(p.items[0].overdueDays, 3)
+  assert.equal(p.items[0].reason, '逾期 3 天')
+  assert.equal(p.items[2].reason, '新卡 · 先过一遍')
+  assert.ok(p.advice.includes('一口气过完'), p.advice)
+
+  // 到期量超过一轮的 1.5 倍 → 建议顺延，而不是硬扛
+  updateSettings(s, { reviewQueueSize: 2 })
+  for (let i = 0; i < 4; i += 1) {
+    const t = addTask(s, { title: `政治补 ${i}`, subject: '政治' })
+    scheduleTask(s, t.id, '2026-10-08', T0)
+  }
+  const heavy = reviewPlan(s, T0, 3)
+  assert.equal(heavy.due, 7)
+  assert.equal(heavy.cap, 2)
+  assert.equal(heavy.items.length, 3)
+  assert.ok(heavy.advice.includes('别硬扛'), heavy.advice)
+  assert.ok(heavy.advice.includes('3.5 倍'), heavy.advice)
+
+  // 中间档：多于建议张数、但不到 1.5 倍 → 按顺序开头
+  const mid = normalize(null)
+  const many = []
+  for (let i = 0; i < 6; i += 1) {
+    const t = addTask(mid, { title: `M${i}` })
+    scheduleTask(mid, t.id, '2026-10-08', T0)
+    many.push(t)
+  }
+  assert.ok(reviewPlan(mid, T0, 3).advice.includes('按这个顺序开头'))
+
+  const empty = reviewPlan(normalize(null), T0, 3)
+  assert.deepEqual(empty.items, [])
+  assert.equal(empty.due, 0)
+  assert.equal(empty.advice, null)
+})
+
+test('今日建议的理由按「逾期 → 忘过 → 难度 → 新卡 → 今天到期」取第一条', () => {
+  const mk = (review) => normalize({
+    tasks: [{ id: 'x', title: 'X', subject: '864', status: 'todo', order: 0, review: { lastAt: T0 - 3 * DAY, ...review } }],
+    sessions: [],
+    reviews: [],
+    journal: {},
+  })
+  const reasonOf = (review) => reviewPlan(mk(review), T0, 1).items[0].reason
+  assert.equal(reasonOf({ due: '2026-10-08', intervalDays: 3, ease: 2.5, reps: 3, lapses: 0 }), '今天到期')
+  assert.equal(reasonOf({ due: '2026-10-08', intervalDays: 3, ease: 2.5, reps: 3, lapses: 2 }), '忘过 2 次')
+  assert.equal(reasonOf({ due: '2026-10-08', intervalDays: 3, ease: 1.8, reps: 3, lapses: 0 }), '难度偏高')
+  assert.equal(reasonOf({ due: '2026-10-08', intervalDays: 3, ease: 2.5, reps: 0, lapses: 0 }), '新卡 · 先过一遍')
+  assert.equal(reasonOf({ due: '2026-10-05', intervalDays: 3, ease: 2.5, reps: 3, lapses: 0 }), '逾期 3 天')
 })
 
 // ---------------------------------------------------------------- 标签 / 复盘 / 周报

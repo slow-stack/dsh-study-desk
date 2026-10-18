@@ -778,6 +778,171 @@ export function reviewStats(state, now = Date.now()) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 遗忘曲线：把排期背后的记忆强度画出来，并把「今天该先过哪几张」算出来
+// ---------------------------------------------------------------------------
+
+/**
+ * 间隔到期的那一刻，希望记忆还剩这么多。用它来反推「记忆稳定度 S」：
+ * 曲线在 due 那天刚好落到 90%，于是图上「掉到 90%」的位置就是排期那天，
+ * 曲线与排期自洽 —— 可视化不是另算一套，而是把已有的排期翻译成图。
+ */
+const TARGET_RETENTION = 0.9
+
+const CURVE_SAMPLES = 30
+
+/** 所有卡片共用一个横轴长度，这样「曲线陡不陡」才是可比的。 */
+const CURVE_SPAN_DAYS = 30
+
+/**
+ * 一张卡的记忆强度曲线：艾宾浩斯式指数衰减 R(t) = e^(-t/S)。
+ *
+ * 全部输入只有 review 四个字段（intervalDays / reps / lapses / lastAt），
+ * 所以客户端不需要再实现一遍算法，直接把点数组画出来就行。
+ *
+ * 横轴是固定的 30 天（从这张卡上次复习那天算起），不是「按各自间隔缩放」——
+ * 缩放会让每张卡的曲线长得一模一样，等于没画。固定横轴之后：稳定度高的卡
+ * 是一条几乎水平的线，刚忘过的卡肉眼可见地往下掉，一眼就能挑出脆的那张。
+ * 返回的 points 是 0..100 的整数数组，todayIndex / dueIndex 是要打标记的位置。
+ */
+export function memoryCurve(review, now = Date.now()) {
+  const r = { ...emptyReview(), ...(review || {}) }
+  const last = r.lastAt ? startOfDay(r.lastAt) : startOfDay(now)
+  const today = startOfDay(now)
+  const elapsed = Math.max(0, (today - last) / 86400000)
+  // 从没排过期的卡（intervalDays 0）按「一天一过」画；忘过的卡稳定度更低
+  const interval = r.intervalDays > 0 ? r.intervalDays : (r.lapses > 0 ? 0.5 : 1)
+  const stabilityDays = interval / -Math.log(TARGET_RETENTION)
+  // 逾期太久的卡要保证「今天」落在窗口里，否则曲线看不到当下这一点
+  const spanDays = Math.min(90, Math.max(CURVE_SPAN_DAYS, Math.ceil(elapsed) + 7))
+  const retention = (dayOffset) => Math.max(0, Math.min(100, Math.round(Math.exp(-dayOffset / stabilityDays) * 100)))
+
+  const points = []
+  for (let i = 0; i <= CURVE_SAMPLES; i += 1) {
+    points.push(retention((spanDays * i) / CURVE_SAMPLES))
+  }
+  const indexOf = (ts) => {
+    const dayOffset = (ts - last) / 86400000
+    return Math.max(0, Math.min(CURVE_SAMPLES, Math.round((dayOffset / spanDays) * CURVE_SAMPLES)))
+  }
+  const dueTs = parseDayKey(r.due || '')
+  return {
+    points,
+    samples: CURVE_SAMPLES,
+    spanDays,
+    stabilityDays: Math.round(stabilityDays * 10) / 10,
+    todayIndex: indexOf(today),
+    dueIndex: Number.isFinite(dueTs) ? indexOf(dueTs) : null,
+    todayRetention: retention(elapsed),
+  }
+}
+
+/**
+ * 未来 N 天的到期预测。逾期的一律算进今天（它们本来就要今天处理），
+ * 于是这根柱状图回答的是「接下来每天要过几张」，用来把量摊平。
+ */
+export function reviewForecast(state, days = 7, now = Date.now()) {
+  const span = Math.max(1, Math.min(30, Math.floor(Number(days) || 7)))
+  const base = startOfDay(now)
+  const buckets = []
+  for (let i = 0; i < span; i += 1) {
+    const ts = addDays(base, i)
+    buckets.push({ key: dayKey(ts), ts, offset: i, count: 0, overdue: 0, isToday: i === 0 })
+  }
+  let later = 0
+  for (const t of state.tasks) {
+    if (!t.review || !t.review.due) continue
+    const d = daysUntil(t.review.due, now)
+    if (d === null) continue
+    if (d < 0) buckets[0].overdue += 1
+    else if (d < span) buckets[d].count += 1
+    else later += 1
+  }
+  const list = buckets.map((b) => ({ ...b, count: b.count + b.overdue }))
+  const max = list.reduce((m, b) => Math.max(m, b.count), 0)
+  return { days: list, later, total: list.reduce((n, b) => n + b.count, 0), max }
+}
+
+/**
+ * 今日建议：在到期队列之上再排一次「先做哪几张」。
+ *
+ * 打分只有四个可解释的来源，图上也会把理由写出来，不搞黑箱：
+ *   逾期天数（最要紧，逾期越久越优先）
+ *   忘过的次数与难度（lapses 多、ease 低 = 这张卡更容易塌）
+ *   新卡（reps 0，趁热过一遍成本最低）
+ *   置顶卡（用户自己按的优先级）
+ * 最后再按科目做一次轮换，避免建议里连着三张都是同一科。
+ */
+export function reviewPlan(state, now = Date.now(), limit = 3) {
+  const queue = dueQueue(state, now)
+  const cap = Math.max(1, Math.min(60, Math.floor(Number(state.settings.reviewQueueSize) || 10)))
+  const scored = queue.map((t) => {
+    const r = t.review
+    const overdue = Math.max(0, -daysUntil(r.due, now))
+    const lapses = r.lapses || 0
+    const ease = Number.isFinite(Number(r.ease)) ? Number(r.ease) : 2.5
+    const isNew = r.reps === 0 && lapses === 0
+    const score =
+      overdue * 10 +
+      lapses * 8 +
+      Math.max(0, 2.5 - ease) * 20 +
+      (isNew ? 4 : 0) +
+      (t.pinned ? 6 : 0)
+    return { task: t, overdue, lapses, ease, isNew, score }
+  }).sort((a, b) => (b.score - a.score) || (a.task.order - b.task.order))
+
+  // 科目轮换：先按分数每科取一张（避免连着三张都是 631），不够再按分数补齐
+  const picked = []
+  const pickedIds = new Set()
+  const usedSubjects = new Set()
+  const target = Math.min(limit, scored.length)
+  for (const item of scored) {
+    if (picked.length >= target) break
+    const subj = item.task.subject || '未归类'
+    if (usedSubjects.has(subj)) continue
+    pickedIds.add(item.task.id)
+    usedSubjects.add(subj)
+    picked.push(item)
+  }
+  if (picked.length < target) {
+    for (const item of scored) {
+      if (picked.length >= target) break
+      if (pickedIds.has(item.task.id)) continue
+      pickedIds.add(item.task.id)
+      picked.push(item)
+    }
+  }
+
+  const items = picked.map((item) => ({
+    id: item.task.id,
+    title: item.task.title,
+    subject: item.task.subject,
+    due: item.task.review.due,
+    overdueDays: item.overdue,
+    ease: item.ease,
+    reps: item.task.review.reps,
+    lapses: item.lapses,
+    reason: item.overdue > 0 ? `逾期 ${item.overdue} 天`
+      : item.lapses >= 2 ? `忘过 ${item.lapses} 次`
+        : item.ease < 2.2 ? '难度偏高'
+          : item.isNew ? '新卡 · 先过一遍'
+            : '今天到期',
+  }))
+
+  const due = queue.length
+  let advice = null
+  if (due > 0) {
+    if (due > cap * 1.5) {
+      advice = `今天到期 ${due} 张，是平时一轮（${cap} 张）的 ${(due / cap).toFixed(1)} 倍。别硬扛：先把下面这几张过了，剩下的顺延到明天，曲线不会因为晚一天就塌掉。`
+    } else if (due <= items.length) {
+      advice = `今天只有 ${due} 张，一口气过完就是完整的一轮。`
+    } else {
+      advice = `今天到期 ${due} 张。建议按这个顺序开头：先处理最旧的和最容易忘的，再往下顺。`
+    }
+  }
+  return { items, due, cap, advice }
+}
+
 /** 全部标签及用量，过滤栏用。 */
 export function allTags(state) {
   const map = new Map()
