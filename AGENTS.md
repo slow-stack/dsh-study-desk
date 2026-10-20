@@ -246,7 +246,17 @@ gh release create v0.6.1 --title '…' --notes-file <文件>
 Trusted Publisher 已于 2026-10-18 登记完成（repo `slow-stack/dsh-study-desk`、
 workflow `release.yml`、允许 publish），**实测认证已通过**：复验那次失败在
 `You cannot publish over the previously published versions: 0.6.1` —— 那是版本号已被本机
-直发占用，不是配置问题。真正验证 OIDC 全链路要等下一个新版本号。
+直发占用，不是配置问题。OIDC 全链路已在 2026-10-21 的 v0.7.0 上走通：
+日志里有 `publish Signed provenance statement`、`Provenance statement published to
+transparency log`，最后 `+ dsh-study-desk@0.7.0`。
+
+**但那条 run 是红的，红在最后一步「验证真的发上去了」**：`npm view <pkg>@<新号>` 报 404。
+注册表对新版本是异步的，`npm publish` 成功后自己都会打一句
+`may take a few minutes to become available`，而验证紧跟在 publish 后面几秒就跑了。
+**这个 404 不代表发布失败** —— 别去重发，第二次 `npm publish` 只会撞上
+`cannot publish over the previously published versions`，那才是真麻烦。
+现在那一步改成了最多 12 次、间隔 15 秒的重试。判断发没发上去，看 publish 日志里有没有
+`+ <pkg>@<版本>` 和 transparency log 链接，或者过几分钟去 npmjs.com 的包页面确认。
 
 顺手记下第一次（未登记时）的报错形状，以后好区分：
 `npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-study-desk`，而日志里
