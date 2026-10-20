@@ -571,8 +571,10 @@ window.__ModuleLoader__.load({
       useTick(500)
       const timer = s.state.timer
       const settings = s.state.settings || {}
-      const remaining = timerRemaining(timer, now)
       const total = timer ? timer.minutes * 60000 : (Number(settings.focusMin) || 25) * 60000
+      // 没起钟时也把这一段多长显示在字面上：不然她刚把自由时长改成 90，看到的还是 00:00，
+      // 无从确认那个值真进去了（起钟后计时器自己会接管 remaining）。
+      const remaining = timer ? timerRemaining(timer, now) : total
       const isFocus = !timer || timer.kind === 'focus'
       const presets = [25, 45, 60]
       const candidates = store.state.tasks.filter((t) => t.status !== 'done')
@@ -618,7 +620,7 @@ window.__ModuleLoader__.load({
           h('button', {
             key: 'play',
             className: 'sd-iconbtn sd-iconbtn-lg',
-            title: timer ? (timer.running ? '暂停' : '继续') : (effectiveName ? '开始专注' : '先给这段起个名字'),
+            title: timer ? (timer.running ? '暂停' : '继续') : (effectiveName ? `开始专注 ${Number(settings.focusMin) || 25} 分钟` : '先给这段起个名字'),
             disabled: !timer && !effectiveName,
             onClick: () => {
               if (!timer) start(settings.focusMin || 25)
@@ -658,6 +660,16 @@ window.__ModuleLoader__.load({
                 title: effectiveName ? `开始 ${m} 分钟` : '先给这段起个名字',
                 onClick: () => store.apply('settings.update', { patch: { focusMin: m } }).then(() => start(m)),
               }, `${m} 分钟`)),
+              // 三个预设之外的自由值：只改「这一段多长」，起钟还是交给那颗 ▶。
+              // 预设点了就顺手起钟，这里不跟着起 —— 她可能只想把默认值调成 90 再挑卡。
+              h(NumField, {
+                key: 'custom',
+                label: '自定义',
+                value: Number(settings.focusMin) || 25,
+                min: 1,
+                max: 240,
+                onCommit: (v) => store.apply('settings.update', { patch: { focusMin: v } }),
+              }),
             ])
             : h('div', { className: 'sd-row', key: 'p' }, [
               h('span', { className: 'sd-mini-cap', key: 'c' }, '这一轮第 ' + (timer.round || 1)),
@@ -2213,7 +2225,7 @@ window.__ModuleLoader__.load({
         }),
         h('div', { className: 'sd-settings-grid', key: 'g' }, [
           h(NumField, { key: 'goal', label: '每日目标（分钟）', value: st.dailyGoalMin || 180, min: 10, max: 1440, onCommit: (v) => patch({ dailyGoalMin: v }) }),
-          h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 180, onCommit: (v) => patch({ focusMin: v }) }),
+          h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 240, onCommit: (v) => patch({ focusMin: v }) }),
           h(NumField, { key: 'sb', label: '短休息（分钟）', value: st.shortBreakMin || 5, min: 1, max: 60, onCommit: (v) => patch({ shortBreakMin: v }) }),
           h(NumField, { key: 'lb', label: '长休息（分钟）', value: st.longBreakMin || 15, min: 1, max: 120, onCommit: (v) => patch({ longBreakMin: v }) }),
           h(NumField, { key: 'rw', label: '几轮后长休息', value: st.roundsBeforeLong || 4, min: 2, max: 12, onCommit: (v) => patch({ roundsBeforeLong: v }) }),
