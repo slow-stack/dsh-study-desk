@@ -25,7 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { deskDir } from './desk.js'
+import { dayKey, deskDir } from './desk.js'
 
 export const PKG = 'cn.com.langeasy.LangEasyLexis'
 export const HOST = 'https://learnywhere.cn'
@@ -96,13 +96,26 @@ export function compactDate(v) {
 /**
  * 从 `User_Preference_<uid>.xml` 的键值表里抽出面板要用的那几项。
  * 纯函数：给测试喂一段 XML 就能验，不碰文件系统也不联网。
+ * @param {Record<string,string>} pref
+ * @param {string|null} today 本地日期键 `YYYY-MM-DD`；给了才能判断本地刷没刷到今天
  */
-export function parseUserPrefs(pref) {
+export function parseUserPrefs(pref, today = null) {
   const userInfo = jparse(pref.userInfo, {})
-  const duration = jparse(pref.key_learn_duration_last || pref[`key_learn_duration_${pref.checkIn_date}`], {})
+  const lastRaw = pref.key_learn_duration_last ?? pref[`key_learn_duration_${pref.checkIn_date}`] ?? null
+  const duration = jparse(lastRaw, {})
   const week = jparse(pref.week_learn_sign_status, [])
   const book = jparse(pref.library_learning, {})
   const plan = jparse(pref.learn_plan_config_pre_11650, {})
+  // 本地这份时长到底「记到哪天」。Androws 惰性刷盘，last 可能还是几天前那一份，
+  // 表现是数字看着挺正常、其实是旧的 —— 所以拿 last 的原文去和逐日快照键里内容相同的那个对。
+  // 键名按日期升序扫，命中就覆盖，最后留下的是最晚的一天（中间那天没学、累计没动时不该说成更早）。
+  let durationAsOf = compactDate(pref.checkIn_date)
+  if (lastRaw != null) {
+    for (const k of Object.keys(pref).sort()) {
+      const m = /^key_learn_duration_(\d{8})$/.exec(k)
+      if (m && pref[k] === lastRaw) durationAsOf = compactDate(m[1])
+    }
+  }
   const out = {
     user: {
       uid: int(userInfo.id),
@@ -119,6 +132,8 @@ export function parseUserPrefs(pref) {
       durationMin: int(duration.total?.duration),
       durationSec: int(duration.total?.durationInSec),
     },
+    durationAsOf,
+    durationStale: Boolean(today && durationAsOf && durationAsOf !== today),
     checkIn: {
       lastDate: compactDate(pref.checkIn_date),
       week: (Array.isArray(week) ? week : []).map((w) => ({
@@ -303,6 +318,45 @@ export function signedDates(byMonth) {
  * 采集结果 → 面板消费的紧凑形状。缓存与快照都存这一份，形状只有一个。
  * 顺带把 sid 摘要、临时目录这些不该外传的东西挡在外面。
  */
+/** 云端 dashboard 的 durationList 用字面量「今日」当当天那一行的 date（不是日期串）。 */
+const CLOUD_TODAY_LABEL = '今日'
+
+function dayDurationMin(list) {
+  const hit = (Array.isArray(list) ? list : []).find((x) => String(x.date ?? '') === CLOUD_TODAY_LABEL)
+  // 没有这一行返回 null，和「有这一行但是 0 分钟」区分开
+  return hit ? int(hit.duration) : null
+}
+
+/**
+ * 本地与云端两个「只增不减」的累计量里取较新的那一个。
+ *
+ * 必须取新而不是「有本地就用本地」：本地 prefs 躺在虚拟磁盘镜像里，Androws 是惰性刷盘的，
+ * 实测能滞后好几天 —— 10-20 那次采集到的本地还是 10-14 的快照（今日 20 / 累计 2018），
+ * 同一时刻云端已经记到今日 82 / 累计 2131。面板只读本地那两个字段，数就成了错的。
+ *
+ * 分和秒必须同源：index.js 会把「X 分钟（Y 秒）」拼进 system prompt，
+ * 一个取新一个留旧快照就自相矛盾。取到云端值时按整分钟换算（云端本来也只给分钟）。
+ */
+function fresherDuration(local, cloudMin) {
+  const localMin = int(local?.durationMin)
+  const cMin = int(cloudMin)
+  if (cMin > localMin) return { durationMin: cMin, durationSec: cMin * 60 }
+  return { durationMin: localMin, durationSec: int(local?.durationSec) }
+}
+
+/**
+ * 今日时长不能像累计那样「取大」—— 它每天归零，取大等于把昨天那份当成今天的
+ * （实测过零点时本地和云端都还挂着前一天的 82 分钟）。
+ * 服务端是实时的，App 自己那套「今天」也按服务端的日界算，所以有云端那一行就用它；
+ * 拿不到（sid 失效、或接口换了形状没有「今日」行）才退回本地那份，
+ * 这份可能是昨天的，由 durationMightBeStale 去说明。
+ */
+function todayDuration(local, cloud) {
+  const cMin = cloud && cloud.ok !== false ? dayDurationMin(cloud.recentDuration) : null
+  if (cMin !== null) return { durationMin: cMin, durationSec: cMin * 60 }
+  return { durationMin: int(local?.durationMin), durationSec: int(local?.durationSec) }
+}
+
 export function bbdcView(data) {
   if (!data) return null
   const cloud = data.cloud || null
@@ -321,9 +375,12 @@ export function bbdcView(data) {
   const localToday = data.today || null
   const cloudToday = cloud?.today || null
   const cloudWordSum = cloudToday ? int(cloudToday.learnNum) + int(cloudToday.reviewNum) : 0
+  const todayMerged = todayDuration(localToday, cloud)
+  const totalMerged = fresherDuration(data.total, cloud?.totalDurationMin)
   const today = (localToday || cloudToday)
     ? {
         ...(localToday || { durationMin: 0, durationSec: 0, words: 0 }),
+        ...todayMerged,
         words: Math.max(int(localToday?.words), cloudWordSum),
         learnNum: int(cloudToday?.learnNum),
         reviewNum: int(cloudToday?.reviewNum),
@@ -336,7 +393,14 @@ export function bbdcView(data) {
     source: data.source || [],
     user: data.user || null,
     today,
-    total: data.total || null,
+    total: (data.total || cloud?.totalDurationMin) ? { ...(data.total || {}), ...totalMerged } : null,
+    // 本地那份的日子与陈旧标记：云端没连上时，面板靠它把「这个数可能是旧的」写在脸上
+    durationAsOf: data.durationAsOf ?? null,
+    durationStale: !!data.durationStale,
+    // 面板和 system prompt 都只看这一个标记：本地落后、而且这次云端没兜住，才该提示。
+    // 规则只写在这一处 —— 客户端是独立 bundle（只能 require react），没法 import 这个模块，
+    // 两边各写一遍迟早对不上。
+    durationMightBeStale: Boolean(data.durationStale && !(cloud && cloud.ok !== false)),
     checkIn: data.checkIn || null,
     book: data.book || null,
     dailyPlan: data.dailyPlan || null,
@@ -439,7 +503,8 @@ async function collect({ offline, vhd, sevenzip, keep }) {
         const name = fs.readdirSync(prefsDir).find((x) => /^User_Preference_\d+\.xml$/.test(x))
         if (name) {
           const pref = xmlToMap(fs.readFileSync(path.join(prefsDir, name), 'utf8'))
-          const local = parseUserPrefs(pref)
+          // 用本地日期判断陈旧（dayKey 走本地时区；toISOString 会在 UTC+8 的早上把日期认错天）
+          const local = parseUserPrefs(pref, dayKey(Date.now()))
           if (!local.user.uid) local.user.uid = Number(name.match(/(\d+)\.xml$/)[1])
           Object.assign(result, local)
           result.source.push('app-local')
@@ -459,9 +524,6 @@ async function collect({ offline, vhd, sevenzip, keep }) {
           if (!result.user) result.user = { uid: 0, nickname: picked.nickname, continuousDays: 0, totalDays: 0 }
           else if (!result.user.nickname) result.user.nickname = picked.nickname
           result.sidHint = `${picked.sid.slice(0, 8)}…（已隐藏）`
-          if (!result.total?.durationMin && result.cloud.totalDurationMin) {
-            result.total = { durationMin: result.cloud.totalDurationMin, durationSec: 0 }
-          }
         } else {
           result.cloud = {
             ok: false,

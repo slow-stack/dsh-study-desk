@@ -504,6 +504,10 @@ function bbdcText(data) {
   if (t) lines.push(`- 今日：学习 ${t.words || 0} 词 · 时长 ${fmtMinutes(t.durationMin || 0)}`)
   const tot = data.total
   if (tot) lines.push(`- 累计时长：${fmtMinutes(tot.durationMin || 0)}${tot.durationSec ? `（${tot.durationSec} 秒）` : ''}`)
+  // 别把滞后几小时的本地快照当成实时数报给她：这个标记只在「本地落后且云端没兜住」时为真
+  if (data.durationMightBeStale) {
+    lines.push(`  （以上两项时长出自 App 本地，本地只刷到 ${data.durationAsOf || '未知'}，可能偏旧，报数时请带上这一句）`)
+  }
   const c = data.cloud
   if (c && c.ok && c.totalWords !== null && c.totalWords !== undefined) {
     lines.push(`- 累计学习 ${c.totalWords} 词 · 累计复习 ${c.totalReviews || 0} 次（近 ${c.months || 0} 个月）`)

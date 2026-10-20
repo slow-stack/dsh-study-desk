@@ -956,6 +956,11 @@ window.__ModuleLoader__.load({
                 ? h('div', { className: 'sd-block-sub', key: 'note' },
                     `累计词数来自 ${cloud.months} 个月的逐月记录相加（接口本身不返回总数）；累计复习 ${cloud.totalReviews} 次`)
                 : null,
+              // 本地那份落后、这次云端又没兜住 —— 不提示的话它看着就是个正常的数
+              b.durationMightBeStale
+                ? h('div', { className: 'sd-block-sub sd-bnote-warn', key: 'warn' },
+                    `上面两个时长出自 App 本地，本地只刷到 ${b.durationAsOf || '未知'}（虚拟磁盘攒一会儿才写盘），可能偏旧。重新登录不背单词、或打开一次统计页后再刷新。`)
+                : null,
             ]),
 
             // 打卡日历
@@ -2392,16 +2397,18 @@ window.__ModuleLoader__.load({
       '.sd-pill.busy{opacity:.6;cursor:progress}',
       '.sd-pill:disabled{opacity:.45;cursor:default}',
       '.sd-bgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}',
-      '.sd-bstat{border:1px solid var(--dsw-alias-border-l1);border-radius:11px;background:var(--dsw-alias-bg-base);padding:11px 13px;display:flex;flex-direction:column;gap:5px;min-width:0}',
-      '.sd-bstat-label{font-size:11px;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary)}',
+      '.sd-bstat{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius-sm);background:var(--dsw-alias-bg-base);padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}',
+      '.sd-bstat-label{font-size:var(--sd-fs-micro);letter-spacing:.08em;color:var(--dsw-alias-label-tertiary)}',
       '.sd-bstat-value{display:flex;align-items:baseline;gap:4px;min-width:0}',
-      '.sd-bstat-num{font-size:25px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}',
+      '.sd-bstat-num{font-size:var(--sd-fs-num);font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family-brand)}',
       '.sd-bstat-num.sd-bstat-brand{color:var(--dsw-alias-brand-primary)}',
-      '.sd-bstat-unit{font-size:12px;color:var(--dsw-alias-label-secondary)}',
-      '.sd-bcal-ym{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:6.5em;text-align:center}',
+      '.sd-bstat-unit{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
+      // 陈旧提醒：宿主没有 warning 语义色，用 error 那档（这不是「坏了」，是「这个数可能旧」）
+      '.sd-bnote-warn{color:var(--dsw-alias-state-error-primary)}',
+      '.sd-bcal-ym{font-size:var(--sd-fs-cap);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:6.5em;text-align:center}',
       '.sd-bcal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;max-width:340px;margin:2px auto 0}',
-      '.sd-bcal-head{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;line-height:1.6}',
-      '.sd-bcal-cell{aspect-ratio:1/1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}',
+      '.sd-bcal-head{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed);text-align:center;line-height:1.6}',
+      '.sd-bcal-cell{aspect-ratio:1/1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:var(--sd-fs-micro);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}',
       '.sd-bcal-cell.blank{background:transparent;box-shadow:none}',
       '.sd-bcal-cell.future{opacity:.45}',
       '.sd-bcal-cell.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 78%,var(--dsw-alias-bg-layer-3));color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:none}',
