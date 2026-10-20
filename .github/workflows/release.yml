@@ -44,10 +44,26 @@ jobs:
       # 并在仓库里放一个 .npmrc 写 registry=https://registry.npmjs.org/ 与
       # //registry.npmjs.org/:_authToken 指向那个 secret（记得把 secret 加进 env）。
       - name: npm publish（带 provenance）
-        run: npm publish --provenance --access public --no-git-checks
+        # 不带 --no-git-checks：新版 npm 已经不认这个 flag，写了只会得一句
+        # 「Unknown cli config "--git-checks"」然后照样忽略（AGENTS.md 里也记着别抄老命令）。
+        run: npm publish --provenance --access public
 
       - name: 验证真的发上去了
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          npm view "$NAME@$VERSION" version dist.tarball
+          # 注册表对新版本是异步的 —— npm publish 成功之后自己都会打一句
+          # 「may take a few minutes to become available」。紧接着查必 404，
+          # 会把一次明明成功的发布判成红（v0.7.0 就是这么红过一次：
+          # publish 已经 + dsh-study-desk@0.7.0、provenance 也进了 transparency log）。
+          for i in $(seq 1 12); do
+            if npm view "$NAME@$VERSION" version dist.tarball; then
+              echo "已上架：$NAME@$VERSION"
+              exit 0
+            fi
+            echo "注册表还没同步（第 $i/12 次），等 15 秒再查"
+            sleep 15
+          done
+          echo "::error::等了 3 分钟还查不到 $NAME@$VERSION。先别重发：去 npmjs.com 的包页面确认，"
+          echo "   多半是已经发上去了、只是查询接口慢；真没上去再考虑本机直发（见 AGENTS.md 的发版一节）。"
+          exit 1
