@@ -31,8 +31,10 @@
 | `package.json` | `dsh.bundle.patch` 指向上面那个 patch；`dsh.client` 声明客户端半边与注入的运行时包。 |
 | `test/desk.test.js` | 30 个单测，`node --test`。 |
 | `test/markdown.test.js` | 4 个单测：导出→读回往返、手写 Markdown 读回、id 命中即更新。 |
-| `test/bbdc.test.js` | 11 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体等。 |
-| `test/mini-dock.test.js` | 3 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除。 |
+| `test/bbdc.test.js` | 13 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体、时长两边取新、本地刷盘滞后标记等。 |
+| `test/mini-dock.test.js` | 5 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除、声明了 `no-drag`、不许停进宿主标题栏那条拖拽带。 |
+| `test/style.test.js` | 6 个单测（视觉层守卫）：CSS 里 hex 必须为 0、饼图 8 色不许退回语义色、不许有零点几像素字号、标题不用衬线、字阶挂在各根上、图表配色归属。 |
+| `tools/client-loader.mjs` | 把 `client.js` 这个 loader 格式的 bundle 在纯 Node 里载进来、取 `exports.__test`。两个测试文件共用一份，免得各写一套桩。放在 `tools/` 是因为 `node --test` 会把 `test/` 下每个文件都当测试跑。 |
 | `apply-probe.mjs` | 离线冒烟：用 stub ctx 把两侧 `apply()` 真跑一遍，不启动 DSH 就能抓加载期错误。 |
 | `install.mjs` | 把自己的路径写进某个 profile 的 `package.json`，跑 pnpm，并维护 patch 里的入口 URL。 |
 
@@ -41,6 +43,11 @@
 1. **绝不写死颜色。** `client.js` 整块只消费 `--dsw-alias-*` / `--dsw-static-*` 主题 token，不覆写任何 token。
    这条是硬的：用户是 Obsidian / Notion 用户，明确要求「不要改变我看板的主题，看板融入就好」。
    需要带色就用 `color-mix(in srgb, var(--dsw-alias-brand-primary) N%, transparent)`。
+   **图表分类色别拿语义色凑**：`--dsw-alias-brand-primary` 在默认主题里其实是
+   `neutral-bluish-1000`（近黑）、`state-idle` 是 `neutral-300`（灰），拿它们当饼图色板
+   会得到「五个 tone 里三个是灰的」的一团糊。分类色走 `--dsw-static-*` 的色族
+   （蓝 / 琥珀 / 绿 / 红 + `color-mix` 补齐），它们浅深两套主题同值 ——
+   **图表色不随主题翻**，这是刻意取舍，别当 bug「修」。`test/style.test.js` 有守卫。
 2. **热力图的语义是「复习分钟数」。** 别改成按会话数 / token 数点亮 —— 那正是市面上同类插件的问题，也是本插件存在的理由。
 3. **数据落 `<DSH_HOME>/study-desk/desk.json`**（本机即 `D:\DSH\.dsh\study-desk\desk.json`），不放进这个工程目录：
    源码和数据分开，工程目录可以整体搬走 / 丢进 git。写入必须是「临时文件 + rename」原子替换；
@@ -63,6 +70,14 @@
    `sid` 的编码形态也是坑：缓存里那串**已经是百分号编码过的**，必须原样拼进 query
    （用 `URLSearchParams.set` 或 `encodeURIComponent` 会二次编码 `%`→`%25`，服务端不报错，
    但会返回**别人的**游客数据 —— 表现是「数字全都对不上」而不是「报错」）。
+   **时长两边取新，而且「今日」和「累计」规则不同**：本地 prefs 躺在虚拟磁盘里、
+   Androws 攒一会儿才刷盘，实测能滞后几天（10-20 那次抽出来的就是 10-14 的快照）。
+   所以「有本地就用本地」是错的。累计只增不减，取较大即取较新；
+   **今日每天归零，不能取大**（过零点时本地和云端都还挂着前一天的数），有云端那一行就用云端。
+   分与秒必须同源 —— `index.js` 会拼「X 分钟（Y 秒）」注入 system prompt，混用会自相矛盾。
+   规则只写在 `bbdcView()` 一处（客户端是独立 bundle、只能 `require react`，两边各写一遍必散）。
+   另有 `durationAsOf` / `durationMightBeStale`：只在「本地落后且云端没兜住」时提醒，
+   判定今天用 `desk.js` 的 `dayKey`（本地时区），**不能用 `toISOString()`** —— UTC+8 的早上会认错天。
 
 ## 三个必须知道的坑
 
@@ -116,7 +131,7 @@ ctx.provide('studyDesk', { ... })   // 对
 ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk" without provide
 ```
 
-### 坑 3：宿主外壳不替你滚、也不替你抬层（客户端布局）
+### 坑 3：宿主外壳不替你滚、不替你抬层，还会吞掉标题栏那条带的输入（客户端布局）
 
 这两条都来自 `app.asar` 里的 `@deepseek-ai/dsh-client-ui-layout/AppFrame.module.css`，
 在本仓库里 grep 不到，只能反编译宿主看：
@@ -139,6 +154,18 @@ ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk
   主题 token 定义在 `body` 上，所以 portal 之后 `--dsw-alias-*` 照样取得到。
   验证过的对照：同一个右下角落点，层内形态被 body 级浮层盖住（`elementFromPoint` 命中的是别人），
   portal 形态命中自己。
+- **portal 到 `body` 还不够：Windows 宿主顶部有一条会吞鼠标事件的拖拽带。**
+  `[data-windows-titlebar] .BynINW_frame::before` 是 `inset:0 0 auto`、高
+  `--dsh-windows-titlebar-height`（宿主 JS 写死 40px）的满宽 `-webkit-app-region: drag` 带，
+  右上还压着 `z-index:1100` 的窗口按钮。这条带上的鼠标按下被拿去做**窗口拖拽**，DOM 收不到事件；
+  而 app-region 挖洞**不看层叠顺序** —— 浮层不显式声明 `-webkit-app-region: no-drag`，
+  再高的 z-index 也照样被吞（宿主给自己那条带里的 fixed 控件 `._2H3hWW_toggle` 就是这么配的）。
+  症状是「看得见、拖不动、点不动」，且唯一逃出来的手势（拖走 / 双击复位）本身也要点击，
+  落点又存在 localStorage —— 重载也还是坏的，看着像代码坏了。
+  两道一起上：`.sd-mini` / `.sd-mini-fab` 声明 `no-drag`，`clampMiniPos()` 再把顶边留到那条带之下
+  （只在 `data-windows-titlebar` 且非全屏时留，高度读 `--dsh-windows-titlebar-height`，读不到兜底 40），
+  历史坏落点加载时会被自动顶回来。**普通浏览器复现不了这条带**（app-region 是 Electron/CEF 特性），
+  所以这一类改动只能靠真 DSH 验证，无头截图只能证明字号与位置对。
 
 ## 改完怎么生效
 
@@ -149,13 +176,15 @@ ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk
 
 只改文件不递增 → 跑的还是旧代码；只递增不停用再启用 → 装配根本不重跑。
 客户端半边（`client.js`）没有这层缓存，改完刷新页面即可。
+**整进程重启就不用 `--bump`**：新进程是启动期装配，按裸包名就能解析，patch 保持可移植形态即可
+（此时 `git status` 里那个「常年已修改」的 `cordis.patch.yml` 反而是干净的）。
 
 提交前记得 `git checkout cordis.patch.yml`，把本机 URL 换回裸包名。
 
 ## 测试
 
 ```bash
-node --test             # 48 个单测：数据层 + 番茄钟状态机 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析
+node --test             # 58 个单测：数据层 + 番茄钟状态机 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析与时长取新 + 迷你条落点与拖拽带 + 视觉层守卫（hex / 字阶 / 配色归属）
 node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op / 快照新字段
 node install.mjs --check  # 体检：本目录与某个 profile 的接线是否完整
 ```
