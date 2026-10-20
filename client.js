@@ -1446,14 +1446,33 @@ window.__ModuleLoader__.load({
     // 番茄投入饼图（番茄ToDo 式：按「这段番茄的名字」聚合成环）
     // -----------------------------------------------------------------------
 
-    /** 扇区取色只用主题 token：五个既有色轮换 + 透明度阶梯，绝不硬编码颜色。 */
+    /** 分类色板：只从宿主 --dsw-static-* 的中间调取，再用 color-mix 混齐 8 色。
+     *
+     *  为什么不用语义色：brand-primary 实际解析成 neutral-bluish-1000（近黑）、
+     *  state-idle 是 neutral-300（灰），五个 tone 里三个是灰的，环看着就是一团糊。
+     *  语义色表达「状态」，分类色板表达「这一段是谁」，两件事不该共用一套值。
+     *
+     *  这些 static 值不随明暗主题翻转（宿主在浅色和深色两个块里给的是同一份值），
+     *  取 500/450/400 中间调是为了在深底和浅底上都够看得清 —— 图表色本来就该稳定。
+     *
+     *  顺序按「少分段时也要好区分」排，不是按色相环排：前五味 蓝/琥珀/绿/红/紫
+     *  两两都隔得开；剩下的混色刻意排到 6~8 位，让色相各自落回环上的空档
+     *  （青≈180°、玫瑰≈345°、黄绿≈65°），而不是挤在琥珀和红之间。
+     *  宿主只有 蓝/绿/琥珀/红 四个色族，八个位置里第 7、8 位只能靠混色填空档。
+     */
     const PIE_TONES = [
-      'var(--dsw-alias-brand-primary)',
-      'var(--dsw-alias-state-success-primary)',
-      'var(--dsw-alias-state-business-primary)',
-      'var(--dsw-alias-state-idle-primary)',
-      'color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-state-idle-primary))',
+      'var(--dsw-static-deepseek-500)',
+      'var(--dsw-static-amber-500)',
+      'var(--dsw-static-green-500)',
+      'var(--dsw-static-red-500)',
+      'color-mix(in srgb,var(--dsw-static-deepseek-500) 55%,var(--dsw-static-red-500))',
+      'color-mix(in srgb,var(--dsw-static-blue-450) 60%,var(--dsw-static-green-400))',
+      'color-mix(in srgb,var(--dsw-static-red-400) 72%,var(--dsw-static-deepseek-400))',
+      'color-mix(in srgb,var(--dsw-static-green-400) 60%,var(--dsw-static-amber-400))',
     ]
+
+    // 超过这个数就并进「其他」，否则小扇区细到点不到也读不出
+    const MAX_SLICES = 8
 
     function pieSlicePath(cx, cy, r, ri, a0, a1) {
       // 整圆特判：起终点重合时 arc 画不出来，用两个半圆拼
@@ -1482,7 +1501,6 @@ window.__ModuleLoader__.load({
       const [range, setRange] = React.useState('today')
       const data = s.focusPie || { today: [], month: [] }
       const rows = range === 'today' ? (data.today || []) : (data.month || [])
-      const MAX_SLICES = 8
       const total = rows.reduce((m, x) => m + x.minutes, 0)
       let slices = rows
       if (rows.length > MAX_SLICES) {
@@ -2437,14 +2455,16 @@ window.__ModuleLoader__.load({
       '.sd-subj-min{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
       '.sd-empty-block{font-size:11.5px;color:var(--dsw-alias-label-dimmed);line-height:1.6}',
       // 番茄分布饼图
-      '.sd-pie-wrap{display:flex;align-items:center;gap:14px;flex-wrap:wrap}',
+      '.sd-pie-wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}',
       '.sd-pie{flex:none}',
-      '.sd-pie path{stroke:var(--dsw-alias-bg-layer-1);stroke-width:1}',
-      '.sd-pie-num{font-size:13px;font-weight:600;fill:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}',
-      '.sd-pie-cap{font-size:7.5px;fill:var(--dsw-alias-label-tertiary)}',
+      // 扇区之间留一条和卡底同色的缺口：分段感比颜色更硬,环上一眼能数出几段
+      '.sd-pie path{stroke:var(--dsw-alias-bg-layer-1);stroke-width:1.5;stroke-linejoin:round}',
+      // 这两行是 viewBox 用户单位(环是 96 单位画在 112px 上),不是设备像素,所以不走 --sd-fs-* 阶梯
+      '.sd-pie-num{font-size:16px;font-weight:600;fill:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}',
+      '.sd-pie-cap{font-size:8px;fill:var(--dsw-alias-label-tertiary)}',
       '.sd-pie-legend{flex:1;min-width:9em;display:flex;flex-direction:column;gap:6px}',
-      '.sd-pie-row{display:flex;align-items:center;gap:8px;font-size:11.5px;min-width:0}',
-      '.sd-pie-swatch{width:9px;height:9px;border-radius:3px;flex:none}',
+      '.sd-pie-row{display:flex;align-items:center;gap:8px;font-size:var(--sd-fs-cap);min-width:0}',
+      '.sd-pie-swatch{width:10px;height:10px;border-radius:3px;flex:none}',
       '.sd-pie-name{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
       '.sd-pie-min{margin-left:auto;flex:none;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
       '.sd-range-tabs{display:flex;align-items:center;gap:5px;margin-left:auto}',
@@ -2689,7 +2709,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = inject
-    exports.__test = { clampMiniPos, fmtClock, fmtStamp, daysUntil, tasksIn, CSS, MemoryCurve, Forecast, PlanStrip, ReviewQueue, store, BbdcPanel, monthCells, shiftYm, ymOf }
+    exports.__test = { clampMiniPos, fmtClock, fmtStamp, daysUntil, tasksIn, CSS, PIE_TONES, MAX_SLICES, MemoryCurve, Forecast, PlanStrip, ReviewQueue, store, BbdcPanel, monthCells, shiftYm, ymOf }
     return module.exports
   },
 })
