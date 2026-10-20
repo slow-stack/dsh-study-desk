@@ -500,7 +500,7 @@ window.__ModuleLoader__.load({
             h('span', { className: 'sd-today-cap', key: 'c' }, '今日专注'),
             h('span', { className: 'sd-today-num', key: 'n' }, fmtMinutes(s.todayMinutes)),
             h('span', { className: 'sd-today-goal', key: 'g' }, `/ ${fmtMinutes(daily)} · ${pct}%`),
-            h('div', { className: 'sd-today-bar', key: 'b' }, h(Progress, { value: s.todayMinutes, max: daily })),
+            h('div', { className: 'sd-today-bar', key: 'b' }, h(Progress, { value: s.todayMinutes, max: daily, tone: 'study' })),
           ]),
           h('div', { className: 'sd-today sd-today-streak', key: 's' }, [
             h('span', { className: 'sd-today-cap', key: 'c' }, '连续打卡'),
@@ -2279,8 +2279,10 @@ window.__ModuleLoader__.load({
       '.sd-bar{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;width:100%}',
       '.sd-bar-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}',
       '.sd-bar-muted .sd-bar-fill{background:var(--dsw-alias-state-idle-primary)}',
+      // 今日进度条 = 今天已投入的分钟数，跟热力图/周报同一个绿；计时器那条继续走品牌色（语义不同）
+      '.sd-bar-study .sd-bar-fill{background:var(--dsw-static-green-500)}',
       // 计时卡
-      '.sd-timer-card{border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:14px 16px;display:flex;flex-direction:column;gap:10px}',
+      '.sd-timer-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);padding:16px 18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 1px 2px rgba(0,0,0,.05)}',
       '.sd-timer-name-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}',
       '.sd-timer-name-row .sd-input.wide{flex:1;min-width:12em}',
       '.sd-name-empty::placeholder{color:var(--dsw-alias-label-dimmed)}',
@@ -2409,13 +2411,16 @@ window.__ModuleLoader__.load({
       '.sd-cell{width:13px;height:13px;border-radius:2.5px;background:var(--dsw-alias-bg-layer-3)}',
       '.sd-cell.empty{background:transparent}',
       '.sd-cell.lv0{background:var(--dsw-alias-bg-layer-3);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}',
-      '.sd-cell.lv1{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 24%,var(--dsw-alias-bg-layer-3))}',
-      '.sd-cell.lv2{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-bg-layer-3))}',
-      '.sd-cell.lv3{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 70%,var(--dsw-alias-bg-layer-3))}',
-      '.sd-cell.lv4{background:var(--dsw-alias-brand-primary)}',
+      // 热力图 = 已经投入的复习分钟数，用绿色阶梯（宿主 static 色板）。
+      // 以前走 --dsw-alias-brand-primary：她这套主题把它解析成 neutral-bluish-1000（近黑），
+      // 于是整片深浅是「灰→白」而不是有色阶，看着就像没上色。
+      '.sd-cell.lv1{background:color-mix(in srgb,var(--dsw-static-green-500) 24%,var(--dsw-alias-bg-layer-3))}',
+      '.sd-cell.lv2{background:color-mix(in srgb,var(--dsw-static-green-500) 48%,var(--dsw-alias-bg-layer-3))}',
+      '.sd-cell.lv3{background:color-mix(in srgb,var(--dsw-static-green-500) 74%,var(--dsw-alias-bg-layer-3))}',
+      '.sd-cell.lv4{background:var(--dsw-static-green-500)}',
       '.sd-cell.today{outline:1px solid var(--dsw-alias-label-primary);outline-offset:1px}',
       '.sd-cell.legend{display:inline-block;vertical-align:middle;margin:0 2px}',
-      '.sd-heat-foot{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.sd-heat-foot{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary)}',
       '.sd-legend{display:inline-flex;align-items:center;gap:3px;margin-left:auto}',
       // 单词打卡（不背单词）
       '.sd-pill.busy{opacity:.6;cursor:progress}',
@@ -2453,7 +2458,7 @@ window.__ModuleLoader__.load({
       '.sd-subj-label{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.sd-subj-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
       '.sd-subj-min{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
-      '.sd-empty-block{font-size:11.5px;color:var(--dsw-alias-label-dimmed);line-height:1.6}',
+      '.sd-empty-block{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-dimmed);line-height:1.6}',
       // 番茄分布饼图
       '.sd-pie-wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}',
       '.sd-pie{flex:none}',
@@ -2512,29 +2517,30 @@ window.__ModuleLoader__.load({
       '.sd-forecast-bars{display:flex;align-items:flex-end;gap:5px;height:62px;flex:none}',
       '.sd-fbar{width:26px;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px}',
       '.sd-fbar-track{flex:1;width:100%;max-width:20px;display:flex;align-items:flex-end;border-radius:5px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
-      '.sd-fbar-fill{width:100%;border-radius:5px 5px 0 0;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);transition:height .3s ease}',
-      '.sd-fbar.today .sd-fbar-fill{background:var(--dsw-alias-brand-primary)}',
-      '.sd-fbar-n{font-size:9.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:11px;line-height:11px}',
-      '.sd-fbar-label{font-size:9.5px;color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      // 到期预报是「欠着的债」，和绿色（已投入）分家：柱体琥珀，今天那一根转红
+      '.sd-fbar-fill{width:100%;border-radius:5px 5px 0 0;background:color-mix(in srgb,var(--dsw-static-amber-500) 55%,transparent);transition:height .3s ease}',
+      '.sd-fbar.today .sd-fbar-fill{background:var(--dsw-static-red-500)}',
+      '.sd-fbar-n{font-size:var(--sd-fs-tick);color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:11px;line-height:11px}',
+      '.sd-fbar-label{font-size:var(--sd-fs-tick);color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
       '.sd-fbar.today .sd-fbar-label{color:var(--dsw-alias-label-secondary)}',
-      '.sd-forecast-tail{font-size:11px;color:var(--dsw-alias-label-tertiary);flex:1;min-width:8em;padding-bottom:2px}',
+      '.sd-forecast-tail{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary);flex:1;min-width:8em;padding-bottom:2px}',
       // 周报
       '.sd-weeks{display:flex;align-items:flex-end;gap:6px;height:104px}',
       '.sd-week{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}',
       '.sd-week-track{flex:1;width:100%;max-width:26px;display:flex;align-items:flex-end;border-radius:6px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
-      '.sd-week-fill{width:100%;border-radius:6px 6px 0 0;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);transition:height .3s ease}',
-      '.sd-week.current .sd-week-fill{background:var(--dsw-alias-brand-primary)}',
-      '.sd-week-min{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:12px}',
-      '.sd-week-label{font-size:10px;color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-week-fill{width:100%;border-radius:6px 6px 0 0;background:color-mix(in srgb,var(--dsw-static-green-500) 45%,transparent);transition:height .3s ease}',
+      '.sd-week.current .sd-week-fill{background:var(--dsw-static-green-500)}',
+      '.sd-week-min{font-size:var(--sd-fs-tick);color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;height:12px}',
+      '.sd-week-label{font-size:var(--sd-fs-tick);color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
       // 每日复盘
-      '.sd-journal-input{width:100%;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;padding:8px 10px;outline:none;font-family:inherit}',
+      '.sd-journal-input{width:100%;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-body);line-height:1.6;padding:8px 10px;outline:none;font-family:inherit}',
       '.sd-journal-input:focus{border-color:var(--dsw-alias-brand-primary)}',
       '.sd-journal-list{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px}',
-      '.sd-journal-item{display:grid;grid-template-columns:3.4em 1fr;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}',
+      '.sd-journal-item{display:grid;grid-template-columns:3.4em 1fr;gap:8px;font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
       '.sd-journal-date{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
       '.sd-journal-text{white-space:pre-wrap;word-break:break-word;line-height:1.55}',
-      '.sd-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
-      '.sd-foot{font-size:10.5px;color:var(--dsw-alias-label-dimmed);text-align:center;word-break:break-all}',
+      '.sd-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:8px 12px;font-size:var(--sd-fs-cap);color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
+      '.sd-foot{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed);text-align:center;word-break:break-all}',
       // 迷你条
       // 迷你条：portal 到 body 后是根层叠上下文里的浮层，所以要自己声明 pointer-events
       // 与 z-index（宿主的模态框 1000、菜单/气泡 1100，我们压在它们下面）。
