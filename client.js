@@ -1858,14 +1858,30 @@ window.__ModuleLoader__.load({
       } catch (error) { /* 写不进去就这一次不记 */ }
     }
 
+    // 宿主在 Windows 上给 .BynINW_frame::before 画了一条满宽、高约 40px 的
+    // -webkit-app-region:drag 标题栏带，右上还压着 z-index:1100 的窗口按钮。
+    // 迷你条停进这条带里就同时失去拖动和点击，而唯一逃出来的手势（拖走 / 双击回右下角）
+    // 本身也要点击 —— 死局，所以干脆不让它停进去。全屏时宿主没有这条带。
+    function titlebarBand() {
+      const root = document.documentElement
+      if (!root || !root.hasAttribute || !root.hasAttribute('data-windows-titlebar')) return 0
+      if (root.hasAttribute('data-fullscreen')) return 0
+      try {
+        const px = parseFloat(window.getComputedStyle(root).getPropertyValue('--dsh-windows-titlebar-height'))
+        if (Number.isFinite(px) && px > 0) return px
+      } catch (error) { /* 读不到就用宿主的固定值 */ }
+      return 40
+    }
+
     // 拖出去不许丢：永远留一条边在视口里
     function clampMiniPos(p, w, h) {
       const pad = 6
       const vw = window.innerWidth || 0
       const vh = window.innerHeight || 0
+      const minY = Math.max(pad, titlebarBand())
       const maxX = Math.max(pad, vw - (w || 0) - pad)
-      const maxY = Math.max(pad, vh - (h || 0) - pad)
-      return { x: Math.min(Math.max(pad, p.x), maxX), y: Math.min(Math.max(pad, p.y), maxY) }
+      const maxY = Math.max(minY, vh - (h || 0) - pad)
+      return { x: Math.min(Math.max(pad, p.x), maxX), y: Math.min(Math.max(minY, p.y), maxY) }
     }
 
     // 松手不再吸附：拖到哪就停在哪，只保留 clampMiniPos 防止拖出视口
@@ -2490,7 +2506,7 @@ window.__ModuleLoader__.load({
       // 迷你条
       // 迷你条：portal 到 body 后是根层叠上下文里的浮层，所以要自己声明 pointer-events
       // 与 z-index（宿主的模态框 1000、菜单/气泡 1100，我们压在它们下面）。
-      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;will-change:left,top;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:12px;color:var(--dsw-alias-label-primary);max-width:280px}',
+      '.sd-mini{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;-webkit-app-region:no-drag;will-change:left,top;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-primary);max-width:280px}',
       '.sd-mini-main{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:grab;touch-action:none;user-select:none}',
       '.sd-mini-main:active{cursor:grabbing}',
       '.sd-mini-grip{flex:none;width:8px;height:14px;opacity:.4;background-image:radial-gradient(currentColor 1px,transparent 1.3px);background-size:4px 4px;background-position:1px 2px;background-repeat:repeat}',
@@ -2502,13 +2518,13 @@ window.__ModuleLoader__.load({
       '.sd-mini-row .sd-mini-cap{flex:none}',
       '.sd-mini-actions{gap:6px}',
       '.sd-mini-late{color:var(--dsw-alias-state-error-primary)}',
-      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;will-change:left,top;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
+      '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;-webkit-app-region:no-drag;will-change:left,top;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
-      '.sd-error{margin:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6}',
-      '.sd-error-stack{margin:10px 0 0;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-radius:6px}',
+      '.sd-error{margin:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-body);line-height:1.6}',
+      '.sd-error-stack{margin:10px 0 0;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap;font-size:var(--sd-fs-micro);line-height:1.5;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-radius:6px}',
       // 设置
-      '.sd-settings{display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--dsw-alias-label-primary)}',
-      '.sd-settings-note{margin:0;font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.65}',
+      '.sd-settings{display:flex;flex-direction:column;gap:14px;font-size:var(--sd-fs-body);color:var(--dsw-alias-label-primary)}',
+      '.sd-settings-note{margin:0;font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary);line-height:1.65}',
       '.sd-settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}',
       '.sd-field{display:flex;flex-direction:column;gap:5px}',
       '.sd-field-inline{flex-direction:row;align-items:center;gap:9px;flex-wrap:wrap}',

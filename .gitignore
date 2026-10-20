@@ -8,3 +8,6 @@ Thumbs.db
 .audit-tmp-*
 .qoder-credits/
 pack.log
+
+# 视觉验证的临时产物（harness + 截图），不进版本库
+.shots/
