@@ -1,0 +1,23 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>dsh-study-desk · 学习工作台</title>
+  <!--
+    番茄钟：这个插件唯一时刻陪着她的是右下角那颗常驻计时条，品牌就认它。
+    果体红取自宿主 --dsw-static-red-400/500 一族（#F76B5E → #E03636，渐变做体积），
+    叶子用热力图同款绿（#22C55E / #16A34A）。品牌资产是静态文件，允许写死；
+    钟面白在浅深两底的管理页上都成立。
+  -->
+  <defs>
+    <linearGradient id="sd-tomato" x1="9" y1="11" x2="27" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F76B5E"/>
+      <stop offset="1" stop-color="#E03636"/>
+    </linearGradient>
+  </defs>
+  <path d="M18 8.2C16.2 5.6 12.8 5 10.2 6.6c1.6 2.6 5 3.2 7.8 1.6Z" fill="#22C55E"/>
+  <path d="M18 8.2c1.8-2.6 5.2-3.2 7.8-1.6-1.6 2.6-5 3.2-7.8 1.6Z" fill="#16A34A"/>
+  <circle cx="18" cy="20.5" r="12.2" fill="url(#sd-tomato)"/>
+  <ellipse cx="12.6" cy="15.8" rx="3.4" ry="2.1" fill="#FFFFFF" opacity="0.28" transform="rotate(-32 12.6 15.8)"/>
+  <circle cx="18" cy="20.5" r="7.6" fill="#FFFFFF"/>
+  <path d="M18 20.5V16" stroke="#E03636" stroke-width="1.9" stroke-linecap="round"/>
+  <path d="M18 20.5l3 2.2" stroke="#E03636" stroke-width="1.9" stroke-linecap="round"/>
+  <circle cx="18" cy="20.5" r="1.25" fill="#E03636"/>
+</svg>

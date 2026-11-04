@@ -135,6 +135,22 @@ window.__ModuleLoader__.load({
       return `${d} 天后`
     }
 
+    /** 快捷键只在「没在打字」时生效：输入框、下拉、可编辑元素里的按键是内容，不是指令。 */
+    function isTypingTarget(e) {
+      const t = e && e.target
+      if (!t || !t.tagName) return false
+      const tag = String(t.tagName).toLowerCase()
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true
+    }
+
+    /** 时:分。当天明细里每一段专注的起点。 */
+    function hhmm(ts) {
+      const d = new Date(Number(ts) || 0)
+      if (!Number.isFinite(d.getTime())) return '—'
+      const p = (n) => String(n).padStart(2, '0')
+      return `${p(d.getHours())}:${p(d.getMinutes())}`
+    }
+
     // -----------------------------------------------------------------------
     // 全局 store：宿主是唯一真相源，这里只缓存最近一次快照
     // -----------------------------------------------------------------------
@@ -430,7 +446,18 @@ window.__ModuleLoader__.load({
         'aria-hidden': true,
       }
       const paths = {
-        board: ['M3 4.5h14v11H3z', 'M3 8.5h14', 'M7.5 8.5v7'],
+        board: ['M3 4.5h14v11H3z', 'M3 8.5h14', 'M7.6 8.5v7', 'M12.3 8.5v7', { d: 'M13.4 10.75h2.5v2.5h-2.5z', fill: true }],
+        // 工作台侧栏入口：任务卡 + 计时徽章（品牌款是番茄，侧栏这枚讲「卡上的时间」）。
+        // 卡的右下角在徽章处断开口，避免两条描边打架。
+        deskcard: [
+          'M13 3.5H6A1.5 1.5 0 0 0 4.5 5v10A1.5 1.5 0 0 0 6 16.5h4.9',
+          'M14.5 9.2V5A1.5 1.5 0 0 0 13 3.5',
+          'M7.5 7.5h4',
+          'M7.5 10.5h3',
+          'M18.3 13.5a4.3 4.3 0 1 1-8.6 0 4.3 4.3 0 0 1 8.6 0z',
+          'M14 13.3v-2.1',
+          'M14 13.5l1.7 1.2',
+        ],
         clock: ['M10 3.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z', 'M10 6.5v4l2.5 1.5'],
         play: ['M6.5 4.8v10.4l8-5.2z'],
         pause: ['M7 4.8v10.4', 'M13 4.8v10.4'],
@@ -448,10 +475,20 @@ window.__ModuleLoader__.load({
         down: ['M10 3.5v9', 'M6.2 8.8 10 12.6l3.8-3.8', 'M4 16.5h12'],
         up: ['M10 12.5v-9', 'M6.2 7.2 10 3.4l3.8 3.8', 'M4 16.5h12'],
         tag: ['M10.6 3.5H16v5.4l-8 8-5.4-5.4z', 'M13.1 6.4h.01'],
+        // 词书打卡：本子 + 书脊 + 封面上的勾（原先是通用标签形，认不出「打卡」）
+        book: ['M5 3.5h10.5a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5A1.5 1.5 0 0 1 3.5 15V5A1.5 1.5 0 0 1 5 3.5z', 'M6.5 3.5v13', 'M9.2 10.3l1.7 1.7 3-3.6'],
         search: ['M8.8 3.4a5.4 5.4 0 1 0 0 10.8 5.4 5.4 0 0 0 0-10.8z', 'M12.8 12.8l3.7 3.7'],
       }
       const p = paths[name] || paths.board
-      return h('svg', common, p.map((d, i) => h('path', { key: i, d })))
+      // 路径项可以是字符串（描边）或 { d, fill: true }（填 currentColor，如看板里亮着的那格）
+      return h('svg', common, p.map((entry, i) => {
+        const item = typeof entry === 'string' ? { d: entry } : entry
+        return h('path', {
+          key: i, d: item.d,
+          fill: item.fill ? 'currentColor' : 'none',
+          stroke: item.fill ? 'none' : 'currentColor',
+        })
+      }))
     }
 
     function Progress({ value, max, tone }) {
@@ -597,7 +634,7 @@ window.__ModuleLoader__.load({
         setNameDraft('')
       }
 
-      return h('section', { className: 'sd-timer-card' }, [
+      return h('section', { className: 'sd-timer-card' + (timer && timer.running ? ' running' : '') }, [
         !timer ? h('div', { className: 'sd-timer-name-row', key: 'nr' }, [
           h('input', {
             key: 'n',
@@ -699,6 +736,8 @@ window.__ModuleLoader__.load({
       const settings = s.state.settings || {}
       const weeksCount = Number(settings.heatmapWeeks) || 26
       const [range, setRange] = React.useState(weeksCount)
+      // 点了哪个格子（dayKey）：展开那天的专注明细。原始 sessions 列表，不是聚合 —— 汇总仍归 desk.js。
+      const [picked, setPicked] = React.useState(null)
 
       const byDay = React.useMemo(() => {
         const map = new Map()
@@ -755,6 +794,12 @@ window.__ModuleLoader__.load({
 
       const template = `22px repeat(${grid.cols.length}, 13px)`
 
+      const pickedRows = picked
+        ? s.state.sessions
+          .filter((x) => x.kind === 'focus' && dayKey(x.at) === picked)
+          .sort((a, b) => a.at - b.at)
+        : []
+
       return h('section', { className: 'sd-card-block' }, [
         h('div', { className: 'sd-block-head', key: 'h' }, [
           h('h2', { className: 'sd-block-title', key: 't' }, '学习热力图'),
@@ -782,8 +827,26 @@ window.__ModuleLoader__.load({
               className: 'sd-cell' + (d ? ' lv' + d.level + (d.key === dayKey(now) ? ' today' : '') : ' empty'),
               style: { gridColumn: wi + 2, gridRow: di + 2 },
               title: d ? `${d.key} · 专注 ${d.minutes} 分钟${d.count ? ` · ${d.count} 段` : ''}` : '',
+              onClick: d ? () => setPicked((cur) => (cur === d.key ? null : d.key)) : undefined,
             }))),
           ])),
+        picked
+          ? h('div', { className: 'sd-heat-day-detail', key: 'detail' }, [
+            h('div', { className: 'sd-heat-day-head', key: 'h' }, [
+              h('b', { key: 'd' }, picked + (picked === dayKey(now) ? '（今天）' : '')),
+              h('span', { className: 'sd-block-sub', key: 's' }, pickedRows.length
+                ? `${pickedRows.length} 段 · 共 ${fmtMinutes(pickedRows.reduce((m, x) => m + x.minutes, 0))}`
+                : '这天没有专注记录'),
+              h('button', { className: 'sd-plan-toggle', key: 'x', onClick: () => setPicked(null) }, '收起'),
+            ]),
+            ...pickedRows.map((x) => h('div', { className: 'sd-heat-day-row', key: x.id }, [
+              h('span', { className: 'sd-heat-day-time', key: 't' }, hhmm(x.at)),
+              h('span', { className: 'sd-heat-day-name', key: 'n', title: x.title || x.subject || '' },
+                x.title || x.subject || '未命名'),
+              h('span', { className: 'sd-heat-day-min', key: 'm' }, fmtShort(x.minutes)),
+            ])),
+          ])
+          : null,
         h('div', { className: 'sd-heat-foot', key: 'f' }, [
           h('span', { className: 'sd-heat-note', key: 'n' },
             `点亮条件：当天实际复习满 1 分钟；越亮 = 越接近每日 ${fmtMinutes(goal)} 的目标`),
@@ -1093,6 +1156,7 @@ window.__ModuleLoader__.load({
           note: task.note || '',
           subject: task.subject || '',
           estimateMin: task.estimateMin || 0,
+          dueDate: task.dueDate || '',
         })
         setEditing(true)
       }
@@ -1105,6 +1169,7 @@ window.__ModuleLoader__.load({
         if (draft.subject !== (task.subject || '')) patch.subject = draft.subject
         const est = Math.max(0, Math.floor(Number(draft.estimateMin) || 0))
         if (est !== (task.estimateMin || 0)) patch.estimateMin = est
+        if ((draft.dueDate || '') !== (task.dueDate || '')) patch.dueDate = draft.dueDate || null
         setEditing(false)
         setDraft(null)
         if (Object.keys(patch).length) onUpdate && onUpdate(task.id, patch)
@@ -1128,6 +1193,7 @@ window.__ModuleLoader__.load({
             field('title', '标题', { autoFocus: true }),
             field('subject', '科目'),
             field('estimateMin', '预计分钟', { type: 'number', min: 0 }),
+            field('dueDate', '截止', { type: 'date' }),
             h('label', { className: 'sd-edit-row', key: 'note' }, [
               h('span', { className: 'sd-edit-label', key: 'l' }, '备注'),
               h('textarea', {
@@ -1175,6 +1241,10 @@ window.__ModuleLoader__.load({
           : null,
         h('div', { className: 'sd-card-foot', key: 'foot' }, [
           task.subject ? h('span', { className: 'sd-tag', key: 's' }, task.subject) : null,
+          task.dueDate ? h('span', {
+            className: 'sd-due' + (daysUntil(task.dueDate, Date.now()) <= 0 ? ' late' : ''),
+            key: 'dd', title: `截止 ${task.dueDate}`,
+          }, `⏰ ${dueLabel(task.dueDate)}`) : null,
           spent ? h('span', { className: 'sd-spent', key: 'm', title: '累计投入' }, fmtShort(spent)) : null,
           task.estimateMin && !spent ? h('span', { className: 'sd-est', key: 'e', title: '预计' }, '~' + fmtShort(task.estimateMin)) : null,
           scheduled
@@ -1217,24 +1287,32 @@ window.__ModuleLoader__.load({
       ])
     }
 
-    function Composer({ status, subjects, onAdd }) {
+    function Composer({ status, subjects, onAdd, openSignal }) {
       const [open, setOpen] = React.useState(false)
       const [text, setText] = React.useState('')
       const [subject, setSubject] = React.useState('')
       const ref = React.useRef(null)
 
       React.useEffect(() => { if (open && ref.current) ref.current.focus() }, [open])
+      // 快捷键 n 叫它开：openSignal 从 0 起跳，只在变大时拉开（收起由自己的 Escape/取消管）
+      React.useEffect(() => { if (openSignal) setOpen(true) }, [openSignal])
 
       const commit = () => {
         const raw = text.trim()
         if (!raw) { setOpen(false); return }
-        // Obsidian 肌肉记忆：正文里写 #标签 就直接落成标签
+        // Obsidian 肌肉记忆：正文里写 #标签 就直接落成标签；@YYYY-MM-DD 设截止日期
         const tags = []
+        let dueDate = ''
         const title = raw.replace(/(?:^|\s)#([^\s#，,、]{1,24})/g, (m, tag) => { tags.push(tag); return '' })
+          .replace(/(?:^|\s)@(\d{4}-\d{2}-\d{2})(?=\s|$)/g, (m, d) => { dueDate = d; return '' })
           .replace(/\s+/g, ' ')
           .trim()
-        if (!title) { onAdd({ title: tags.join(' · '), subject, status }); setText(''); return }
-        onAdd({ title, subject, status, tags })
+        if (!title) {
+          onAdd({ title: tags.join(' · ') || (dueDate ? '截止 ' + dueDate : ''), subject, status, dueDate: dueDate || undefined })
+          setText('')
+          return
+        }
+        onAdd({ title, subject, status, tags, dueDate: dueDate || undefined })
         setText('')
         if (ref.current) ref.current.focus()
       }
@@ -1273,7 +1351,7 @@ window.__ModuleLoader__.load({
       ])
     }
 
-    function Column({ meta, tasks, total, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onUpdate, onAdd, onToggleReview, onPickTag, activeTags, filtered }) {
+    function Column({ meta, tasks, total, minutes, subjects, hover, setHover, confirmId, setConfirmId, dragging, setDragging, onMove, onDelete, onUpdate, onAdd, onToggleReview, onPickTag, activeTags, filtered, openSignal }) {
       return h('section', {
         className: 'sd-col' + (hover === meta.id ? ' hover' : ''),
         onDragOver: (e) => { e.preventDefault(); setHover(meta.id) },
@@ -1287,6 +1365,7 @@ window.__ModuleLoader__.load({
         },
       }, [
         h('div', { className: 'sd-col-head', key: 'h' }, [
+          h('span', { className: 'sd-col-dot sd-col-dot-' + meta.id, key: 'd' }),
           h('span', { className: 'sd-col-latin', key: 'l' }, meta.latin),
           h('span', { className: 'sd-col-label', key: 'n' }, meta.label),
           h('span', { className: 'sd-col-count', key: 'c' }, filtered ? `${tasks.length}/${total}` : String(tasks.length)),
@@ -1311,7 +1390,10 @@ window.__ModuleLoader__.load({
             activeTags,
           })),
           tasks.length ? null : h('div', { className: 'sd-col-empty', key: 'e' }, filtered ? '这一列没有符合过滤条件的卡' : (meta.id === 'done' ? '还没有完成的卡' : '空的')),
-          h(Composer, { key: 'composer', status: meta.id, subjects, onAdd }),
+          meta.id === 'done' && !filtered && total > tasks.length
+            ? h('div', { className: 'sd-col-more', key: 'more' }, `只摆最近 30 张 · 共 ${total} 张`)
+            : null,
+          h(Composer, { key: 'composer', status: meta.id, subjects, onAdd, openSignal }),
         ]),
       ])
     }
@@ -1325,8 +1407,29 @@ window.__ModuleLoader__.load({
       const [tags, setTags] = React.useState([])
       const [dueOnly, setDueOnly] = React.useState(false)
       const [q, setQ] = React.useState('')
+      // 快捷键 n 的信号：从 0 起跳，只发给待办列的 Composer
+      const [composeTick, setComposeTick] = React.useState(0)
       const subjects = (s.state.settings && s.state.settings.subjects) || []
       const allTags = s.tags || []
+
+      // 键盘流：/ 聚焦搜索，n 打开待办列的新建框。
+      // 打字的时候这些是字符不是指令，isTypingTarget 把输入中的情况全挡掉。
+      React.useEffect(() => {
+        const onKey = (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return
+          if (isTypingTarget(e)) return
+          if (document.querySelector('.sd-focus-overlay')) return // 过卡模式开着时，键盘是它的
+          if (e.key === '/') {
+            const el = document.querySelector('.sd-search-input')
+            if (el) { e.preventDefault(); el.focus() }
+          } else if (e.key === 'n' || e.key === 'N') {
+            e.preventDefault()
+            setComposeTick((v) => v + 1)
+          }
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+      }, [])
 
       const move = (id, status, beforeId) => store.apply('task.move', { id, status, beforeId: beforeId || undefined })
       const del = (id) => store.apply('task.delete', { id })
@@ -1413,6 +1516,7 @@ window.__ModuleLoader__.load({
             onToggleReview: toggleReview,
             onPickTag: pickTag,
             activeTags: tags,
+            openSignal: meta.id === 'todo' ? composeTick : 0,
           })
         })),
       ])
@@ -1676,6 +1780,81 @@ window.__ModuleLoader__.load({
     // 今日复习队列
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // 过卡模式：全屏一次一张。备注默认藏着（回背类卡先自己回想），空格/点击翻开。
+    // 键盘监听挂在浮层元素上并 stopPropagation —— Board 的 / 与 n、队列的 1/2/3 都在
+    // window 上，事件从浮层冒到 window 之前就会被拦下，不会两头都打分。
+    // -----------------------------------------------------------------------
+
+    function FocusReview({ session, setSession, onClose, onGrade }) {
+      const cur = session.items[session.i] || null
+      const ref = React.useRef(null)
+      React.useEffect(() => { if (ref.current && ref.current.focus) ref.current.focus() }, [])
+
+      const advance = () => setSession((f) => ({ ...f, i: f.i + 1, revealed: false }))
+      const reveal = () => setSession((f) => ({ ...f, revealed: true }))
+      const grade = (g) => { if (cur) onGrade(cur.id, g); advance() }
+
+      const onKeyDown = (e) => {
+        e.stopPropagation()
+        if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault()
+          if (!session.revealed) reveal()
+          return
+        }
+        if (e.key === 'ArrowRight') { e.preventDefault(); advance(); return }
+        const g = { 1: 'again', 2: 'good', 3: 'easy' }[e.key]
+        if (g) { e.preventDefault(); grade(g) }
+      }
+
+      const done = !cur
+      return toTopLayer(h('div', {
+        className: 'sd-focus-overlay', ref, tabIndex: 0, onKeyDown,
+        role: 'dialog', 'aria-label': '复习过卡模式',
+      }, [
+        h('div', { className: 'sd-focus-card', key: 'c' }, done
+          ? [
+            h('div', { className: 'sd-focus-title', key: 't' }, '这一批过完了'),
+            h('div', { className: 'sd-focus-meta', key: 'm' }, `共 ${session.items.length} 张。打分记录都进了排期，明天见。`),
+            h('div', { className: 'sd-focus-acts', key: 'a' }, [
+              h('button', { key: 'ok', className: 'sd-textbtn primary', onClick: onClose }, '完成'),
+              h('button', { key: 'more', className: 'sd-textbtn', onClick: () => setSession({ items: session.items, i: 0, revealed: false }) }, '再过一遍'),
+            ]),
+          ]
+          : [
+            h('div', { className: 'sd-focus-progress', key: 'p' },
+              `${session.i + 1} / ${session.items.length} · 空格 显示备注 · → 跳过 · Esc 退出`),
+            h('div', { className: 'sd-focus-title', key: 't' }, cur.title),
+            h('div', { className: 'sd-focus-meta', key: 'm' }, [
+              cur.subject ? h('span', { className: 'sd-tag', key: 's' }, cur.subject) : null,
+              h('span', { className: 'sd-due', key: 'd' }, dueLabel(cur.review.due)),
+              h('span', { className: 'sd-review-cap', key: 'r' },
+                `第 ${cur.review.reps + 1} 遍 · 上次间隔 ${cur.review.intervalDays} 天 · 难度 ${cur.review.ease}`),
+              cur.curve ? h('span', { className: 'sd-review-curve', key: 'cv' }, [
+                h(MemoryCurve, { key: 'g', curve: cur.curve, width: 66, height: 20 }),
+                h('span', { className: 'sd-review-mem', key: 'mem' }, `记忆 ${cur.curve.todayRetention}%`),
+              ]) : null,
+            ]),
+            cur.note
+              ? (session.revealed
+                ? h('div', { className: 'sd-focus-note', key: 'n' }, cur.note)
+                : h('button', { className: 'sd-textbtn', key: 'n', onClick: reveal }, '显示备注（空格）'))
+              : null,
+            h('div', { className: 'sd-focus-acts', key: 'a' }, [
+              ...GRADES.map((g) => h('button', {
+                key: g, className: 'sd-grade lg ' + g,
+                title: g === 'again' ? '忘了：间隔清零，今天之内再来一遍（快捷键 1）'
+                  : g === 'easy' ? '很简单：间隔拉长一点（快捷键 3）'
+                    : '记得：按难度推进间隔（快捷键 2）',
+                onClick: () => grade(g),
+              }, GRADE_LABEL[g])),
+              h('button', { key: 'skip', className: 'sd-textbtn', title: '先放着，等下再说（快捷键 →）', onClick: advance }, '跳过 →'),
+            ]),
+          ]),
+      ]))
+    }
+
     function ReviewQueue() {
       const s = useStore()
       const st = s.review || {}
@@ -1685,8 +1864,34 @@ window.__ModuleLoader__.load({
         setBusy(id)
         Promise.resolve(store.apply('review.grade', { id, grade: g })).finally(() => setBusy(null))
       }
+      // 缓一天：排期推到明天，难度/遍数/间隔原样保留（review.schedule 本来就认任意 due）
+      const snooze = (id) => {
+        setBusy(id)
+        Promise.resolve(store.apply('review.schedule', { id, due: dayKey(addDays(Date.now(), 1)) }))
+          .finally(() => setBusy(null))
+      }
       const limit = Number(s.state.settings.reviewQueueSize) || 10
       const shown = queue.slice(0, limit)
+
+      // 1/2/3 给队首那张打分：队列顺序就是 desk.js 排好的「最该先过」。
+      // queue 的引用只在快照到达时才换，所以这条监听不会跟着 500ms 的钟摆重挂。
+      React.useEffect(() => {
+        const onKey = (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return
+          if (isTypingTarget(e)) return
+          if (document.querySelector('.sd-focus-overlay')) return // 过卡模式开着时，按键归它自己管
+          const g = { 1: 'again', 2: 'good', 3: 'easy' }[e.key]
+          if (!g || busy) return
+          const first = queue.slice(0, limit)[0]
+          if (first) grade(first.id, g)
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+      }, [queue, limit, busy])
+
+      // 过卡模式：一次一张全屏过，session 在进入那一刻定住队列（打分后快照会变，不能跟着漂）
+      const [focus, setFocus] = React.useState(null)
+      const startFocus = () => setFocus({ items: queue.slice(), i: 0, revealed: false })
 
       return h('section', { className: 'sd-card-block sd-review' }, [
         h('div', { className: 'sd-block-head', key: 'h' }, [
@@ -1695,8 +1900,17 @@ window.__ModuleLoader__.load({
             h('span', { key: 'x' }, ' 今日复习'),
           ]),
           h('span', { className: 'sd-block-sub', key: 's' }, st.scheduled
-            ? `排期 ${st.scheduled} 张 · 待过 ${st.due}（逾期 ${st.overdue}）· 今天已打分 ${st.doneToday} 次 · 本周 ${st.weekDone} 次`
+            ? `排期 ${st.scheduled} 张 · 待过 ${st.due}（逾期 ${st.overdue}）· 今天已打分 ${st.doneToday} 次 · 本周 ${st.weekDone} 次${shown.length ? ' · 按 1/2/3 过第一张' : ''}`
             : '还没有卡进入复习循环'),
+          shown.length
+            ? h('div', { className: 'sd-row sd-row-end', key: 'b' }, [
+              h('button', {
+                className: 'sd-pill sm', key: 'f',
+                title: '一张一张过大卡：1/2/3 打分，空格显示备注，→ 跳过，Esc 退出',
+                onClick: startFocus,
+              }, '过卡模式'),
+            ])
+            : null,
         ]),
         h(PlanStrip, { key: 'p' }),
         shown.length
@@ -1717,15 +1931,22 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'sd-review-cap', key: 'r' }, `第 ${t.review.reps + 1} 遍 · 上次间隔 ${t.review.intervalDays} 天 · 难度 ${t.review.ease}`),
               ]),
             ]),
-            h('div', { className: 'sd-review-acts', key: 'c' }, GRADES.map((g) => h('button', {
-              key: g,
-              className: 'sd-grade ' + g,
-              disabled: busy === t.id,
-              title: g === 'again' ? '忘了：间隔清零，今天之内再来一遍'
-                : g === 'easy' ? '很简单：间隔拉长一点'
-                  : '记得：按难度推进间隔',
-              onClick: () => grade(t.id, g),
-            }, GRADE_LABEL[g]))),
+            h('div', { className: 'sd-review-acts', key: 'c' }, [
+              ...GRADES.map((g) => h('button', {
+                key: g,
+                className: 'sd-grade ' + g,
+                disabled: busy === t.id,
+                title: g === 'again' ? '忘了：间隔清零，今天之内再来一遍'
+                  : g === 'easy' ? '很简单：间隔拉长一点'
+                    : '记得：按难度推进间隔',
+                onClick: () => grade(t.id, g),
+              }, GRADE_LABEL[g])),
+              h('button', {
+                key: 'snooze', className: 'sd-textbtn sm', disabled: busy === t.id,
+                title: '今天不想过它：排期改到明天，难度与间隔原样保留',
+                onClick: () => snooze(t.id),
+              }, '缓一天'),
+            ]),
           ])))
           : h('div', { className: 'sd-empty-block', key: 'e' }, st.scheduled
             ? '今天该复习的都过完了。想加练就把更多卡拉进复习循环（卡片右下角的 ↻）。'
@@ -1735,6 +1956,10 @@ window.__ModuleLoader__.load({
         queue.length > shown.length
           ? h('div', { className: 'sd-review-more', key: 'm' }, `队列里还有 ${queue.length - shown.length} 张没摆出来（每次摆几张在设置页里调）`)
           : null,
+        focus ? h(FocusReview, {
+          key: 'focus', session: focus, setSession: setFocus,
+          onClose: () => setFocus(null), onGrade: grade,
+        }) : null,
       ])
     }
 
@@ -1748,6 +1973,23 @@ window.__ModuleLoader__.load({
       const goal = (s.weekly && s.weekly.goalWeekly) || 0
       const max = Math.max(goal, ...weeks.map((w) => w.minutes), 60)
       const cur = weeks[weeks.length - 1]
+      // 复制周报：文本由宿主的 weeklyText 生成（和模型看到的同一份），这里只管进剪贴板
+      const [copied, setCopied] = React.useState('')
+      const copy = async () => {
+        try {
+          const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ op: 'weekly.text' }),
+          })
+          const json = await res.json()
+          if (!json || !json.text) throw new Error((json && json.error) || '没拿到周报文本')
+          await navigator.clipboard.writeText(json.text)
+          setCopied('已复制，去 Obsidian 粘贴即可')
+        } catch (error) {
+          setCopied('复制失败：' + String((error && error.message) || error))
+        }
+        setTimeout(() => setCopied(''), 3000)
+      }
 
       return h('section', { className: 'sd-card-block' }, [
         h('div', { className: 'sd-block-head', key: 'h' }, [
@@ -1755,6 +1997,10 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sd-block-sub', key: 's' }, cur
             ? `本周 ${fmtMinutes(cur.minutes)}${goal ? ` / 目标 ${fmtMinutes(goal)}` : ''}${cur.deltaPct === null ? '' : ` · 比上周${cur.deltaPct >= 0 ? '+' : ''}${cur.deltaPct}%`}`
             : '还没有记录'),
+          weeks.length ? h('div', { className: 'sd-row sd-row-end', key: 'c' }, [
+            copied ? h('span', { className: 'sd-block-sub', key: 'n' }, copied) : null,
+            h('button', { key: 'b', className: 'sd-textbtn sm', onClick: copy }, '复制周报'),
+          ]) : null,
         ]),
         weeks.length
           ? h('div', { className: 'sd-weeks', key: 'w' }, weeks.map((w) => {
@@ -1796,6 +2042,25 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { setDraft(saved) }, [today])
 
       const save = () => store.apply('journal.set', { text: draft, date: today })
+
+      // 草稿曾经只活在组件状态里：切去单词打卡面板再回来就没了。现在停手 2 秒自动落盘，
+      // 卸载（换面板）那一刻再把没存上的部分补存一次；手动保存与撤销按钮照旧。
+      const latest = React.useRef(null)
+      latest.current = { draft, saved, today }
+      React.useEffect(() => {
+        if (!dirty) return
+        const id = setTimeout(() => {
+          const cur = latest.current
+          store.apply('journal.set', { text: cur.draft, date: cur.today })
+        }, 2000)
+        return () => clearTimeout(id)
+      }, [draft, saved])
+      React.useEffect(() => () => {
+        const cur = latest.current
+        if (cur && cur.draft !== cur.saved) {
+          store.apply('journal.set', { text: cur.draft, date: cur.today })
+        }
+      }, [])
       const recent = (s.journalLog || []).filter((x) => x.date !== today).slice(0, 6)
 
       return h('section', { className: 'sd-card-block sd-journal' }, [
@@ -1823,7 +2088,7 @@ window.__ModuleLoader__.load({
             className: 'sd-textbtn primary', disabled: !dirty, onClick: save,
           }, dirty ? '保存' : '已保存'),
           dirty ? h('button', { className: 'sd-textbtn', onClick: () => setDraft(saved) }, '撤销') : null,
-          h('span', { className: 'sd-block-sub', key: 'h' }, 'Ctrl+回车保存'),
+          h('span', { className: 'sd-block-sub', key: 'h' }, '停手 2 秒自动存 · Ctrl+回车立即存'),
         ]),
         recent.length
           ? h('div', { className: 'sd-journal-list', key: 'l' }, recent.map((x) => h('div', { className: 'sd-journal-item', key: x.date }, [
@@ -1853,7 +2118,7 @@ window.__ModuleLoader__.load({
             h(ReviewQueue, { key: 'review' }),
             h('div', { className: 'sd-section-title', key: 'st' }, [
               h('span', { key: 'a' }, '待办墙'),
-              h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · 输入 #标签 直接打标 · ↻ 把卡拉进复习循环'),
+              h('span', { className: 'sd-section-hint', key: 'b' }, '拖动卡片换列 · #标签 直接打标 · @YYYY-MM-DD 设截止 · ↻ 拉进复习循环 · / 搜索 · n 新建'),
             ]),
             h(Board, { key: 'board' }),
             h('div', { className: 'sd-two', key: 'two' }, [
@@ -1923,6 +2188,10 @@ window.__ModuleLoader__.load({
 
     // 悬浮卡片被谁盖住，在浏览器里根本看不见：拿命中测试结果回传宿主写盘。
     // reportDiag 按 kind+where+message 去重，所以反复探也不会把诊断文件灌爆。
+    // 被盖分两档：盖的人住在宿主模态层（z≥1000：模态框 1000、菜单/气泡 1100）里，
+    // 是迷你条「压在模态下」这条设计取舍的必然结果，不算事故 —— 单独记 mini-under-modal；
+    // 普通内容盖上来才是真回归，继续记 mini-covered。2026-11-05 那次误报就是设置页
+    // （z≥1000）的账号卡片盖住了它，翻诊断时差点当 bug 修。
     function probeOverlayHit(el) {
       if (!el || typeof document.elementFromPoint !== 'function') return
       const rect = el.getBoundingClientRect()
@@ -1932,13 +2201,24 @@ window.__ModuleLoader__.load({
       const top = document.elementFromPoint(cx, cy)
       if (!top || top === el || el.contains(top)) return
       const chain = []
-      for (let node = top; node && chain.length < 3; node = node.parentElement) {
-        const cls = typeof node.className === 'string' && node.className.trim()
-          ? '.' + node.className.trim().split(/\s+/).slice(0, 2).join('.')
-          : ''
-        chain.push(node.tagName.toLowerCase() + cls)
+      let modalZ = 0
+      for (let node = top, i = 0; node && node !== document.body; node = node.parentElement, i += 1) {
+        if (i < 3) {
+          const cls = typeof node.className === 'string' && node.className.trim()
+            ? '.' + node.className.trim().split(/\s+/).slice(0, 2).join('.')
+            : ''
+          chain.push(node.tagName.toLowerCase() + cls)
+        }
+        if (!modalZ) {
+          const z = Number(window.getComputedStyle(node).zIndex)
+          if (Number.isFinite(z) && z >= 1000) modalZ = z
+        }
       }
-      reportDiag({ kind: 'mini-covered', where: 'mini.命中测试', message: `中心 ${cx},${cy} 命中的是 ${chain.join(' < ')}` })
+      reportDiag({
+        kind: modalZ ? 'mini-under-modal' : 'mini-covered',
+        where: 'mini.命中测试',
+        message: `中心 ${cx},${cy} 命中的是 ${chain.join(' < ')}` + (modalZ ? `（宿主模态层 z=${modalZ}，设计内让位）` : ''),
+      })
     }
 
     function MiniBar() {
@@ -2204,6 +2484,46 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    /**
+     * 科目编辑：settings.subjects 是 [{id,label}]，每次改动整份随 settings.update 提交。
+     * 宿主侧（desk.js updateSettings）对 subjects 的规矩是「空列表不动旧值」，
+     * 所以 UI 上最后一个科目不许删 —— 不然她以为删掉了，desk.json 里还在。
+     */
+    function SubjectsField({ value, onCommit }) {
+      const list = Array.isArray(value) ? value : []
+      const [draft, setDraft] = React.useState('')
+      const add = () => {
+        const label = draft.trim().slice(0, 24)
+        if (!label || list.some((x) => x.label === label)) { setDraft(''); return }
+        onCommit([...list, { id: 's' + Date.now().toString(36), label }])
+        setDraft('')
+      }
+      const remove = (id) => onCommit(list.filter((x) => x.id !== id))
+      return h('div', { className: 'sd-field' }, [
+        h('span', { className: 'sd-field-label', key: 'l' }, '科目'),
+        h('div', { className: 'sd-row', key: 'r' }, [
+          ...list.map((x) => h('span', { key: x.id, className: 'sd-subj-chip' }, [
+            h('span', { key: 'n' }, x.label),
+            h('button', {
+              key: 'x', className: 'sd-subj-x', disabled: list.length <= 1,
+              title: list.length <= 1
+                ? '至少留一个科目'
+                : '从科目列表移除（已写在卡上的科目名不动，只是下拉和过滤里不再出现）',
+              onClick: () => remove(x.id),
+            }, '×'),
+          ])),
+          h('input', {
+            key: 'i', className: 'sd-input', type: 'text', value: draft,
+            placeholder: '加一个科目，回车确认',
+            onChange: (e) => setDraft(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); add() } },
+          }),
+          h('button', { key: 'a', className: 'sd-textbtn', disabled: !draft.trim(), onClick: add }, '添加'),
+        ]),
+        h('span', { className: 'sd-field-hint', key: 'h' }, '科目用在卡片、过滤栏和近 30 天统计里；重名或空的会被忽略'),
+      ])
+    }
+
     function Settings() {
       const s = useStore()
       usePoll(60000)
@@ -2223,6 +2543,7 @@ window.__ModuleLoader__.load({
           hint: '格式：名称 2026-10-15~2026-10-24；日期拿不准就在行尾加「约」。坏行会被忽略，不会报错。',
           value: st.milestonesText || '', onCommit: (v) => patch({ milestonesText: v }),
         }),
+        h(SubjectsField, { key: 'subjects', value: st.subjects, onCommit: (list) => patch({ subjects: list }) }),
         h('div', { className: 'sd-settings-grid', key: 'g' }, [
           h(NumField, { key: 'goal', label: '每日目标（分钟）', value: st.dailyGoalMin || 180, min: 10, max: 1440, onCommit: (v) => patch({ dailyGoalMin: v }) }),
           h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 240, onCommit: (v) => patch({ focusMin: v }) }),
@@ -2239,6 +2560,14 @@ window.__ModuleLoader__.load({
           }),
           h('span', { key: 'l' }, '每轮对话把「今天该做什么、该复习什么、昨天卡在哪」告诉模型'),
           h('span', { className: 'sd-field-hint', key: 'h' }, '关掉能省一点上下文'),
+        ]),
+        h('label', { className: 'sd-field sd-field-inline', key: 'nfy' }, [
+          h('input', {
+            key: 'c', type: 'checkbox', checked: st.notifySessionOnTimerEnd !== false,
+            onChange: (e) => patch({ notifySessionOnTimerEnd: e.target.checked }),
+          }),
+          h('span', { key: 'l' }, 'AI 起的番茄钟走完后，往开钟的那个会话发一条自动提醒（督促用）'),
+          h('span', { className: 'sd-field-hint', key: 'h' }, '手动起的钟不提醒；会话已关闭时不补发'),
         ]),
         h('div', { className: 'sd-settings-file', key: 'f' }, `数据文件：${s.deskFile || '—'}`),
         h('div', { className: 'sd-settings-file', key: 'f2' },
@@ -2269,7 +2598,7 @@ window.__ModuleLoader__.load({
       '.sd-head-main{display:flex;flex-direction:column;gap:4px}',
       '.sd-title{margin:0;font-size:var(--sd-fs-num);font-weight:600;letter-spacing:.01em;font-family:var(--dsw-font-family)}',
       '.sd-subtitle{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}',
-      '.sd-count{display:flex;align-items:baseline;gap:4px;padding:6px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1)}',
+      '.sd-count{display:flex;align-items:baseline;gap:4px;padding:6px 14px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,var(--dsw-alias-border-l1));border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,var(--dsw-alias-bg-layer-1))}',
       '.sd-count-num{font-size:var(--sd-fs-num);font-weight:600;line-height:1;font-variant-numeric:tabular-nums;font-family:var(--dsw-font-family-brand);color:var(--dsw-alias-brand-primary)}',
       '.sd-count-cap{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
       '.sd-count-label{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary);margin-left:6px;letter-spacing:.04em}',
@@ -2294,7 +2623,9 @@ window.__ModuleLoader__.load({
       // 今日进度条 = 今天已投入的分钟数，跟热力图/周报同一个绿；计时器那条继续走品牌色（语义不同）
       '.sd-bar-study .sd-bar-fill{background:var(--dsw-static-green-500)}',
       // 计时卡
-      '.sd-timer-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);padding:16px 18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 1px 2px rgba(0,0,0,.05)}',
+      '.sd-timer-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);padding:16px 18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:border-color .2s ease}',
+      // 走钟时卡沿淡淡描一圈品牌色：余光扫一眼就知道钟在跑，不用去读数字
+      '.sd-timer-card.running{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 32%,var(--dsw-alias-border-l1))}',
       '.sd-timer-name-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}',
       '.sd-timer-name-row .sd-input.wide{flex:1;min-width:12em}',
       '.sd-name-empty::placeholder{color:var(--dsw-alias-label-dimmed)}',
@@ -2309,15 +2640,18 @@ window.__ModuleLoader__.load({
       '.sd-timer-task{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40ch}',
       '.sd-timer-sub{color:var(--dsw-alias-label-tertiary)}',
       '.sd-timer-bar{margin-top:2px}',
+      '.sd-timer-bar .sd-bar,.sd-today-bar .sd-bar{height:6px}',
       '.sd-timer-side{display:flex;align-items:center;gap:6px;flex:none}',
       '.sd-timer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px;flex-wrap:wrap}',
       // 通用控件
       '.sd-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
       '.sd-row-end{margin-left:auto}',
       '.sd-mini-cap{font-size:var(--sd-fs-micro);letter-spacing:.06em;color:var(--dsw-alias-label-tertiary)}',
-      '.sd-iconbtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none;transition:border-color .12s ease,color .12s ease,background .12s ease}',
+      '.sd-iconbtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none;transition:border-color .12s ease,color .12s ease,background .12s ease,transform .12s ease}',
       '.sd-iconbtn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}',
+      '.sd-iconbtn:active{transform:scale(.94)}',
       '.sd-iconbtn-lg{width:42px;height:42px;border-radius:12px;color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,transparent)}',
+      '.sd-iconbtn-lg:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}',
       '.sd-iconbtn.sm{width:22px;height:22px;border-radius:6px}',
       '.sd-textbtn{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:var(--sd-fs-cap);padding:3px 10px;border-radius:7px;cursor:pointer;transition:color .12s ease,border-color .12s ease}',
       '.sd-textbtn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3)}',
@@ -2328,9 +2662,10 @@ window.__ModuleLoader__.load({
       '.sd-pill.sm{font-size:var(--sd-fs-micro);padding:2px 8px}',
       '.sd-select{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:7px;padding:3px 8px;font-size:var(--sd-fs-cap);max-width:200px;outline:none}',
       '.sd-select:disabled{opacity:.55}',
+      '.sd-select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
       '.sd-select.sm{font-size:var(--sd-fs-cap)}',
       '.sd-input{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:7px;padding:4px 9px;font-size:var(--sd-fs-body);width:88px;outline:none}',
-      '.sd-input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.sd-input:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}',
       '.sd-input.wide{width:100%;min-width:0}',
       // 分区标题：层级靠字重和留白建立，不靠画线
       '.sd-section-title{display:flex;align-items:baseline;gap:10px;font-size:var(--sd-fs-cap);font-weight:600;letter-spacing:.16em;color:var(--dsw-alias-label-tertiary)}',
@@ -2338,7 +2673,8 @@ window.__ModuleLoader__.load({
       // 看板
       '.sd-boardwrap{display:flex;flex-direction:column;gap:10px}',
       '.sd-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-      '.sd-search{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-tertiary)}',
+      '.sd-search{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-tertiary);transition:border-color .12s ease,box-shadow .12s ease}',
+      '.sd-search:focus-within{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}',
       '.sd-search-input{border:none;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-cap);width:170px}',
       '.sd-tagrow{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}',
       '.sd-tagchip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--sd-fs-micro);padding:1px 8px;border-radius:999px;cursor:pointer;transition:color .12s ease,border-color .12s ease,background .12s ease}',
@@ -2359,14 +2695,20 @@ window.__ModuleLoader__.load({
       '.sd-col{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);padding:12px;display:flex;flex-direction:column;gap:var(--sd-gap-row);min-height:120px;transition:border-color .15s ease,background .15s ease}',
       '.sd-col.hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}',
       '.sd-col-head{display:flex;align-items:center;gap:7px;padding:2px 4px 4px}',
+      // 列头状态点：待办=琥珀（欠着的债，与到期预报同族）、进行中=蓝（分类第一色）、完成=绿（已投入）
+      '.sd-col-dot{width:7px;height:7px;border-radius:50%;flex:none}',
+      '.sd-col-dot-todo{background:var(--dsw-static-amber-500)}',
+      '.sd-col-dot-doing{background:var(--dsw-static-deepseek-500)}',
+      '.sd-col-dot-done{background:var(--dsw-static-green-500)}',
+      '.sd-col-more{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed);text-align:center}',
       '.sd-col-latin{font-size:var(--sd-fs-tick);letter-spacing:.16em;color:var(--dsw-alias-label-dimmed)}',
       '.sd-col-label{font-size:var(--sd-fs-body);font-weight:600;color:var(--dsw-alias-label-secondary)}',
       '.sd-col-count{margin-left:auto;font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:1px 8px}',
       '.sd-col-body{display:flex;flex-direction:column;gap:8px}',
       '.sd-col-empty{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-dimmed);padding:10px 6px;text-align:center}',
       // 卡片
-      '.sd-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius-sm);background:var(--dsw-alias-bg-base);padding:10px 12px;display:flex;flex-direction:column;gap:6px;cursor:grab;transition:border-color .12s ease,box-shadow .12s ease,opacity .12s ease}',
-      '.sd-card:hover{border-color:var(--dsw-alias-border-l3);box-shadow:0 1px 4px rgba(0,0,0,.07)}',
+      '.sd-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius-sm);background:var(--dsw-alias-bg-base);padding:10px 12px;display:flex;flex-direction:column;gap:6px;cursor:grab;transition:border-color .12s ease,box-shadow .12s ease,opacity .12s ease,transform .12s ease}',
+      '.sd-card:hover{border-color:var(--dsw-alias-border-l3);box-shadow:0 1px 4px rgba(0,0,0,.07);transform:translateY(-1px)}',
       '.sd-card.dragging{opacity:.45}',
       '.sd-card.done{opacity:.68}',
       '.sd-card.done .sd-card-title{text-decoration:line-through;color:var(--dsw-alias-label-tertiary)}',
@@ -2386,7 +2728,7 @@ window.__ModuleLoader__.load({
       '.sd-mini:hover{box-shadow:0 10px 30px rgba(0,0,0,.34)}',
       '.sd-mini-fab:hover{box-shadow:0 10px 30px rgba(0,0,0,.34)}',
       // 尊重系统的「减少动态效果」
-      '@media (prefers-reduced-motion:reduce){.sd-mini,.sd-mini-fab,.sd-card-acts,.sd-act{transition:none}}',
+      '@media (prefers-reduced-motion:reduce){.sd-mini,.sd-mini-fab,.sd-card-acts,.sd-act,.sd-card,.sd-iconbtn{transition:none}.sd-card:hover{transform:none}.sd-iconbtn:active{transform:none}}',
       // 键盘可见焦点
       '.sd-iconbtn:focus-visible,.sd-act:focus-visible,.sd-pill:focus-visible,.sd-textbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
       '.sd-act{display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;padding:2px 5px;border-radius:5px;font-size:var(--sd-fs-micro);transition:color .12s ease,background .12s ease}',
@@ -2398,11 +2740,11 @@ window.__ModuleLoader__.load({
       '.sd-edit-row{display:flex;align-items:center;gap:8px}',
       '.sd-edit-label{flex:none;width:4.6em;font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary)}',
       '.sd-edit-input{flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-cap);line-height:1.5;padding:4px 7px;outline:none;font-family:inherit;resize:vertical}',
-      '.sd-edit-input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.sd-edit-input:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}',
       '.sd-act.danger:hover{background:var(--dsw-alias-interactive-bg-hover-danger)}',
       // 新建
       '.sd-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:1px dashed var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-tertiary);font-size:var(--sd-fs-cap);padding:7px;border-radius:9px;cursor:pointer;transition:color .12s ease,border-color .12s ease}',
-      '.sd-add:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3)}',
+      '.sd-add:hover{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1))}',
       '.sd-composer{display:flex;flex-direction:column;gap:7px;border:1px solid var(--dsw-alias-brand-primary);border-radius:10px;padding:8px;background:var(--dsw-alias-bg-base)}',
       '.sd-composer-input{width:100%;resize:vertical;border:none;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-body);line-height:1.55;font-family:inherit}',
       '.sd-composer-foot{display:flex;align-items:center;gap:8px}',
@@ -2431,6 +2773,15 @@ window.__ModuleLoader__.load({
       '.sd-cell.lv3{background:color-mix(in srgb,var(--dsw-static-green-500) 74%,var(--dsw-alias-bg-layer-3))}',
       '.sd-cell.lv4{background:var(--dsw-static-green-500)}',
       '.sd-cell.today{outline:1px solid var(--dsw-alias-label-primary);outline-offset:1px}',
+      '.sd-cell:hover{box-shadow:inset 0 0 0 1px var(--dsw-alias-label-tertiary)}',
+      '.sd-cell:not(.empty){cursor:pointer}',
+      // 点击某天格子展开的当天明细：原始 session 列表（不是聚合）
+      '.sd-heat-day-detail{border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;display:flex;flex-direction:column;gap:5px}',
+      '.sd-heat-day-head{display:flex;align-items:center;gap:8px;font-size:var(--sd-fs-cap)}',
+      '.sd-heat-day-row{display:grid;grid-template-columns:3.2em minmax(0,1fr) auto;gap:8px;align-items:center;font-size:var(--sd-fs-cap)}',
+      '.sd-heat-day-time{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.sd-heat-day-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
+      '.sd-heat-day-min{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
       '.sd-cell.legend{display:inline-block;vertical-align:middle;margin:0 2px}',
       '.sd-heat-foot{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary)}',
       '.sd-legend{display:inline-flex;align-items:center;gap:3px;margin-left:auto}',
@@ -2462,13 +2813,16 @@ window.__ModuleLoader__.load({
       '.sd-recent-row{display:grid;grid-template-columns:minmax(0,3.6em) minmax(0,1fr) auto;align-items:center;gap:9px;font-size:var(--sd-fs-cap)}',
       '.sd-recent-date{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
       '.sd-recent-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
-      '.sd-recent-bar i{display:block;height:100%;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 70%,transparent)}',
+      '.sd-recent-bar i{display:block;height:100%;border-radius:999px;background:color-mix(in srgb,var(--dsw-static-green-500) 78%,transparent)}',
       '.sd-recent-num{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}',
       // 科目分布
       '.sd-subj-list{display:flex;flex-direction:column;gap:7px}',
       '.sd-subj{display:grid;grid-template-columns:minmax(0,7.5em) minmax(0,1fr) auto;align-items:center;gap:9px;font-size:var(--sd-fs-cap)}',
       '.sd-subj-label{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.sd-subj-bar{height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}',
+      // 科目投入条跟热力图/周报同族（绿=已投入）。此前继承 .sd-bar-fill 的品牌色，
+      // 暗色主题下解析成近白，是整页最刺眼的一根条。
+      '.sd-subj-bar .sd-bar-fill{background:var(--dsw-static-green-500)}',
       '.sd-subj-min{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
       '.sd-empty-block{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-dimmed);line-height:1.6}',
       // 番茄分布饼图
@@ -2495,11 +2849,25 @@ window.__ModuleLoader__.load({
       '.sd-review-acts{display:flex;align-items:center;gap:6px;flex:none;margin-left:auto}',
       '.sd-grade{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:var(--sd-fs-cap);padding:3px 11px;border-radius:8px;cursor:pointer;transition:color .12s ease,border-color .12s ease,background .12s ease}',
       '.sd-grade:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}',
+      // 打分键 hover 按各自的语义色淡染：指尖悬在哪一档，颜色先应一声
+      '.sd-grade.again:hover{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent)}',
+      '.sd-grade.good:hover{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}',
+      '.sd-grade.easy:hover{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}',
       '.sd-grade:disabled{opacity:.5;cursor:default}',
       '.sd-grade.again{color:var(--dsw-alias-state-error-primary)}',
       '.sd-grade.good{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,transparent)}',
       '.sd-grade.easy{color:var(--dsw-alias-state-success-primary)}',
       '.sd-review-more{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed)}',
+      // 过卡模式：全屏浮层。z-index 压在宿主模态(1000)之下；Windows 顶部那条 drag 带
+      // 会吞键盘焦点区的点击 —— 浮层必须显式 no-drag（坑 3 同款）。
+      '.sd-focus-overlay{position:fixed;inset:0;z-index:920;background:var(--dsw-alias-bg-base);-webkit-app-region:no-drag;display:flex;align-items:center;justify-content:center;padding:36px;outline:none}',
+      '.sd-focus-card{width:min(720px,100%);max-height:100%;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:26px 28px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);box-shadow:0 10px 40px rgba(0,0,0,.18)}',
+      '.sd-focus-title{font-size:var(--sd-fs-hero);font-weight:600;line-height:1.4;word-break:break-word}',
+      '.sd-focus-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
+      '.sd-focus-note{font-size:var(--sd-fs-body);line-height:1.75;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;border-left:2px solid var(--dsw-alias-border-l2);padding-left:12px}',
+      '.sd-focus-acts{display:flex;align-items:center;gap:8px;margin-top:auto;flex-wrap:wrap}',
+      '.sd-focus-progress{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
+      '.sd-grade.lg{font-size:var(--sd-fs-sub);padding:7px 20px;border-radius:10px}',
       // 遗忘曲线：颜色跟着「今天还剩多少记忆」走，绿=还稳、蓝=该看了、红=快塌了
       '.sd-curve{flex:none;overflow:visible}',
       '.sd-curve-line{fill:none;stroke:currentColor;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round}',
@@ -2546,7 +2914,7 @@ window.__ModuleLoader__.load({
       '.sd-week-label{font-size:var(--sd-fs-tick);color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
       // 每日复盘
       '.sd-journal-input{width:100%;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-body);line-height:1.6;padding:8px 10px;outline:none;font-family:inherit}',
-      '.sd-journal-input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.sd-journal-input:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}',
       '.sd-journal-list{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px}',
       '.sd-journal-item{display:grid;grid-template-columns:3.4em 1fr;gap:8px;font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
       '.sd-journal-date{color:var(--dsw-alias-label-dimmed);font-variant-numeric:tabular-nums}',
@@ -2581,6 +2949,11 @@ window.__ModuleLoader__.load({
       '.sd-field-label{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-secondary)}',
       '.sd-field-hint{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-tertiary);line-height:1.5}',
       '.sd-settings-file{font-size:var(--sd-fs-micro);color:var(--dsw-alias-label-dimmed);word-break:break-all}',
+      // 设置页的科目 chip：带一颗删除叉，最后一个不许删（宿主对空列表不动旧值）
+      '.sd-subj-chip{display:inline-flex;align-items:center;gap:3px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:var(--sd-fs-micro);padding:2px 4px 2px 9px;border-radius:999px}',
+      '.sd-subj-x{border:none;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:var(--sd-fs-cap);line-height:1;padding:0 5px;border-radius:50%;transition:color .12s ease,background .12s ease}',
+      '.sd-subj-x:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover-danger)}',
+      '.sd-subj-x:disabled{opacity:.4;cursor:default}',
       '@media (max-width:900px){.sd-board{grid-template-columns:minmax(0,1fr)}.sd-two{grid-template-columns:minmax(0,1fr)}}',
     ].join('')
 
@@ -2688,7 +3061,7 @@ window.__ModuleLoader__.load({
       // 左侧栏图标：id 与 main 的 key 同名，侧栏点它就会 dispatch 到 main 的同一格
       register('sidebar.panellist',
         { name: 'sidebar.panellist', id: PANEL_ID, order: 40, label: '学习工作台' },
-        (props) => h(Icon, { name: 'board', size: (props && props.size) || 18 }),
+        (props) => h(Icon, { name: 'deskcard', size: (props && props.size) || 18 }),
         'sidebar.panellist')
 
       // 整页工作台
@@ -2714,7 +3087,7 @@ window.__ModuleLoader__.load({
       //   layout.selectPanel: main panel "…" is not registered
       register('sidebar.panellist',
         { name: 'sidebar.panellist', id: BBCDC_PANEL_ID, order: 41, label: '单词打卡' },
-        (props) => h(Icon, { name: 'tag', size: (props && props.size) || 18 }),
+        (props) => h(Icon, { name: 'book', size: (props && props.size) || 18 }),
         'sidebar.panellist.bbdc')
 
       register('main',

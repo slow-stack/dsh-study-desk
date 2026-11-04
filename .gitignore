@@ -11,3 +11,6 @@ pack.log
 
 # 视觉验证的临时产物（harness + 截图），不进版本库
 .shots/
+
+# video2code 会话缓存，不进版本库
+.v2c/

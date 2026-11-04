@@ -254,6 +254,7 @@ export function normalize(raw) {
       subject: String(t.subject || ''),
       note: String(t.note || ''),
       estimateMin: Math.max(0, Math.floor(Number(t.estimateMin) || 0)),
+      dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(t.dueDate || '')) ? String(t.dueDate) : null,
       createdAt: Number(t.createdAt) || Date.now(),
       updatedAt: Number(t.updatedAt) || Number(t.createdAt) || Date.now(),
       doneAt: Number(t.doneAt) || null,
@@ -391,6 +392,7 @@ export function addTask(state, input, now = Date.now()) {
     subject: String((input && input.subject) || ''),
     note: String((input && input.note) || ''),
     estimateMin: Math.max(0, Math.floor(Number(input && input.estimateMin) || 0)),
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String((input && input.dueDate) || '')) ? String(input.dueDate) : null,
     createdAt: now,
     updatedAt: now,
     doneAt: status === 'done' ? now : null,
@@ -411,6 +413,11 @@ export function updateTask(state, ref, patch, now = Date.now()) {
   if (typeof p.note === 'string') task.note = p.note
   if (typeof p.subject === 'string') task.subject = p.subject
   if (p.estimateMin !== undefined) task.estimateMin = Math.max(0, Math.floor(Number(p.estimateMin) || 0))
+  if (p.dueDate !== undefined) {
+    // 卡片自己的硬截止（区别于复习排期 review.due）：只认 YYYY-MM-DD，别的形状一律清空
+    const v = String(p.dueDate || '').trim()
+    task.dueDate = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
+  }
   if (p.pinned !== undefined) task.pinned = !!p.pinned
   if (p.tags !== undefined) task.tags = normalizeTags(p.tags)
   if (p.review === true && !task.review.due) task.review = { ...emptyReview(), due: dayKey(now) }
@@ -491,6 +498,7 @@ export function updateSettings(state, patch) {
     }
   }
   if (p.injectPrompt !== undefined) next.injectPrompt = !!p.injectPrompt
+  if (p.notifySessionOnTimerEnd !== undefined) next.notifySessionOnTimerEnd = !!p.notifySessionOnTimerEnd
   for (const k of ['goalLabel', 'goalNote']) {
     if (p[k] !== undefined) next[k] = String(p[k]).trim().slice(0, 40)
   }
@@ -1059,12 +1067,12 @@ export function summary(state, now = Date.now()) {
       today: state.journal[todayKey] || '',
       yesterday: state.journal[dayKey(addDays(now, -1))] || '',
     },
-    doing: cols.doing.map((t) => ({ id: t.id, title: t.title, subject: t.subject, minutes: byTask.get(t.id) || 0 })),
+    doing: cols.doing.map((t) => ({ id: t.id, title: t.title, subject: t.subject, dueDate: t.dueDate || null, minutes: byTask.get(t.id) || 0 })),
     todo: cols.todo
       .slice()
       .sort((a, b) => (b.pinned - a.pinned) || (a.order - b.order))
       .slice(0, 12)
-      .map((t) => ({ id: t.id, title: t.title, subject: t.subject, pinned: t.pinned, estimateMin: t.estimateMin })),
+      .map((t) => ({ id: t.id, title: t.title, subject: t.subject, pinned: t.pinned, dueDate: t.dueDate || null, estimateMin: t.estimateMin })),
     doneToday: doneToday.map((t) => ({ id: t.id, title: t.title })).slice(0, 12),
     week: heatmap(state, 1, now).weeks[0].days.filter(Boolean).map((d) => ({ date: d.key, minutes: d.minutes })),
   }

@@ -78,6 +78,21 @@
    规则只写在 `bbdcView()` 一处（客户端是独立 bundle、只能 `require react`，两边各写一遍必散）。
    另有 `durationAsOf` / `durationMightBeStale`：只在「本地落后且云端没兜住」时提醒，
    判定今天用 `desk.js` 的 `dayKey`（本地时区），**不能用 `toISOString()`** —— UTC+8 的早上会认错天。
+10. **AI 起番茄钟走门禁，走完的提醒发回起钟的会话。** 这是用户点名的督促链路：
+   - **门禁**：工具 `focus` 起钟必须 `task=` 一张**「进行中」**的卡，不挂卡 / 卡不存在 / 卡不在 doing
+     都直接拒绝，报错文案教完整流程（`add` 建卡 → `move` 到 `doing` → `focus` 挂卡）。目的是逼 AI 把它
+     安排的任务真的落到待办墙上，周报和近 30 天统计才对得上。**只限工具路径**——客户端 POST
+     `timer.start`（手动起钟）不受限制。
+   - **会话标记**：AI 起钟时把 `exec.agent.id`（= 会话 id）存进 `state.timer`（`by:'ai'` + `sessionId`）；
+     专注走完自动摆的休息**继承**这两个字段（链条到休息结束为止），手动提前结束摆的休息也继承。
+   - **提醒发送**：`withDesk` 结账时把走完的段收进 sink，`emitTimerEnd` 过滤（开关关了 / 不是 AI 链 /
+     段走完超过 10 分钟才被结账的都跳过）后调钩子：`ctx.get('agents').get(sessionId).followup(消息)`。
+     这是官方 `dsh-goal-round-driver` 的同款姿势（app.asar 里有源码可对照）；`followup` 空闲就开新一轮、
+     跑着就排下一轮。消息 `role:'user'`、`source.kind:'plugin'`，正文自带「这是系统自动消息，不是用户发言」。
+     宿主侧另有 10 秒看门狗：面板没开没人轮询 desk 时由它兜底结账。
+   - **开关**：`settings.notifySessionOnTimerEnd`（默认开，`!== false` 即开，语义同 `injectPrompt`），
+     设置页有勾选项。**手动停钟（客户端按钮 / 工具 `off=true`）永不提醒**；会话已关闭（agents 里没有）
+     就静默放弃，不排队不补发。
 
 ## 三个必须知道的坑
 

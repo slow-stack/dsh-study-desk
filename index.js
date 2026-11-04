@@ -17,6 +17,7 @@
  * 数据落在 <DSH_HOME>/study-desk/desk.json，路径不写死在 patch 里（写死别人装完起不来）。
  */
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -192,6 +193,44 @@ function serial(fn) {
   return run
 }
 
+// ---------------------------------------------------------------------------
+// 番茄钟走完 → 给起钟的那个 DSH 会话发自动提醒（督促用）。
+// 钩子在 apply() 里挂上（需要 ctx 去拿 agents 服务）；链路：
+//   起钟（工具，exec.agent.id 存进 state.timer.sessionId）
+//   → 任意一侧读写 desk 时 reconcileTimer 结账，把走完的段收集进 sink
+//   → emitTimerEnd 过滤开关/手动/过期 → 钩子用 agents.get(sessionId).followup(消息)
+//     唤醒那个会话（官方 goal-round-driver 同款姿势；空闲就开新一轮，跑着就排下一轮）。
+// 手动停钟（客户端按钮 / 工具 off=true）不提醒；段走完超过 10 分钟才被结账的也不提醒。
+// ---------------------------------------------------------------------------
+
+let timerEndHook = null
+
+function timerEndText(info) {
+  if (info.kind === 'focus') {
+    return `【番茄钟·自动提醒】「${info.title || '未命名'}」这轮 ${info.minutes} 分钟专注计时走完了。`
+      + '这是 study_desk 的系统自动消息，不是用户发言：请用一两句话跟用户确认这轮做了什么，然后提醒休息；'
+      + '不要自动开始下一轮专注，等用户发话。'
+  }
+  return `【番茄钟·自动提醒】${info.minutes} 分钟的休息计时结束了。`
+    + '这是 study_desk 的系统自动消息：提醒用户回到学习；用户要继续时用 study_desk 的 focus 起下一轮'
+    + '（task 必须挂一张「进行中」的卡），不要未经用户确认自动连开。'
+}
+
+function emitTimerEnd(state, endedSegments) {
+  if (!Array.isArray(endedSegments) || !endedSegments.length) return
+  if (state.settings && state.settings.notifySessionOnTimerEnd === false) return
+  if (typeof timerEndHook !== 'function') return
+  for (const info of endedSegments) {
+    // AI 起的才提醒；拖了太久才被结账的段（人早就不在场）也跳过
+    if (!info.sessionId || (Date.now() - info.endedAt) > 10 * 60000) continue
+    try {
+      timerEndHook(info)
+    } catch (error) {
+      console.error('[dsh-study-desk] 番茄钟提醒发送失败：', error && error.message)
+    }
+  }
+}
+
 /**
  * 在串行临界区里读状态 → 顺手结掉走完的计时器 → 跑 mutator → 需要时落盘。
  * mutator 为 null 时是纯读，但计时器结账导致的改动仍会写回。
@@ -199,11 +238,13 @@ function serial(fn) {
 function withDesk(mutator) {
   return serial(() => {
     const state = readDesk()
-    const reconciled = reconcileTimer(state)
+    const endedSegments = []
+    const reconciled = reconcileTimer(state, Date.now(), endedSegments)
     let result
     if (mutator) result = mutator(state)
     if (mutator || reconciled) {
       const saved = writeDesk(state)
+      emitTimerEnd(saved, endedSegments)
       return { state: saved, result }
     }
     return { state, result }
@@ -356,6 +397,12 @@ async function handleApi(req, res) {
       sendJson(res, 200, snapshot(state))
       return
     }
+    if (op === 'weekly.text') {
+      // 周报的纯文本（与 study_desk 工具 report 同一份 weeklyText，不另写一套格式）
+      const { state } = await withDesk(null)
+      sendJson(res, 200, { ok: true, text: weeklyText(state, Math.max(1, Math.round(Number(payload.weeks) || 8))) })
+      return
+    }
     if (op === 'diag.report') {
       // 客户端诊断：不碰 desk.json，只追加到 client-diag.json
       const report = writeDiag(payload)
@@ -405,12 +452,12 @@ function boardText(state) {
   if (ms) lines.push(`- 最近节点：${ms.label} ${ms.start}${ms.end !== ms.start ? '~' + ms.end : ''}（${ms.text}${ms.approx ? '，日期按往年惯例估' : ''}）`)
   lines.push(`- 今日专注 ${fmtMinutes(s.today.minutes)} / 目标 ${fmtMinutes(s.today.goal)}，连续打卡 ${s.streak} 天`)
   if (s.doing.length) {
-    lines.push('- 进行中 ' + s.counts.doing + '：' + s.doing.map((t) => `${t.title}${t.minutes ? `（已投入 ${fmtMinutes(t.minutes)}）` : ''}`).join(' ｜ '))
+    lines.push('- 进行中 ' + s.counts.doing + '：' + s.doing.map((t) => `${t.title}${t.dueDate ? `【${t.dueDate} 截止】` : ''}${t.minutes ? `（已投入 ${fmtMinutes(t.minutes)}）` : ''}`).join(' ｜ '))
   } else {
     lines.push('- 进行中 0：现在没有正在做的卡')
   }
   if (s.todo.length) {
-    lines.push('- 待办 ' + s.counts.todo + '：' + s.todo.slice(0, 8).map((t) => t.pinned ? '★' + t.title : t.title).join(' ｜ '))
+    lines.push('- 待办 ' + s.counts.todo + '：' + s.todo.slice(0, 8).map((t) => (t.pinned ? '★' + t.title : t.title) + (t.dueDate ? `【${t.dueDate} 截止】` : '')).join(' ｜ '))
   } else {
     lines.push('- 待办 0')
   }
@@ -543,7 +590,10 @@ function makeTool() {
       '学习工作台：读写用户的待办墙（待办/进行中/已完成三列）、记录专注时长、查统计与热力图、起停番茄钟、'
       + '管间隔重复复习队列、写每日复盘、出周报。用户说「今天要做什么」「把 X 加到进行中」「这件做完了」'
       + '"我今天学了多久""开始 25 分钟专注""今天该复习什么""这个我忘了/记住了""帮我记一下今天的复盘""最近几周学得怎么样"'
-      + '这类话时用它，而不是自己另开一份待办清单。倒计时的目标与节点由用户在设置页自己填（考试、答辩、投稿都可以）。action 取值：'
+      + '这类话时用它，而不是自己另开一份待办清单。倒计时的目标与节点由用户在设置页自己填（考试、答辩、投稿都可以）。'
+      + 'AI 起番茄钟必须走完整流程：action=add 建卡（或挑已有卡）→ action=move 移到 status=doing → action=focus 且 task=那张卡；'
+      + '不挂卡或卡不在「进行中」会被拒绝。番茄钟走完/休息结束时本工具会自动往起钟的会话发一条【番茄钟·自动提醒】（设置页可关）。'
+      + 'action 取值：'
       + 'board=看当前看板全貌；add=新建卡；move=卡片换列/排序；update=改卡片字段；remove=删卡；'
       + 'focus=起停番茄钟（off=true 停；minutes 控制时长；title 给这段命名，饼图按名字聚合）；stats=查最近 N 天统计；'
       + 'review=看今日复习队列（带 id/title + grade 时改为打分）；journal=看最近复盘（带 text 时写入）；'
@@ -557,11 +607,12 @@ function makeTool() {
       note: { type: 'string', description: '备注' },
       tags: { type: 'string', description: '卡片标签，逗号分隔（如「名词解释, 错题」），add/update 用' },
       estimateMin: { type: 'number', description: '预计要花多少分钟' },
+      dueDate: { type: 'string', description: '截止日期 YYYY-MM-DD（add/update 用；卡片自己的硬截止，区别于复习排期的 due）' },
       pinned: { type: 'boolean', description: '是否置顶（add/update）' },
       review: { type: 'boolean', description: 'add 时给 true = 直接把这张卡拉进间隔重复复习循环' },
       beforeId: { type: 'string', description: 'move 时插到这张卡之前；省略则排到该列末尾' },
       minutes: { type: 'number', description: 'focus 的时长（分钟）；stats 时表示看最近多少天（默认 30）' },
-      task: { type: 'string', description: 'focus 时把专注挂到哪张卡上（id 或标题）' },
+      task: { type: 'string', description: 'focus 时把专注挂到哪张卡上（id 或标题）；AI 起钟必填，且必须是「进行中」的卡——没有就先 add 建卡、move 到 doing' },
       off: { type: 'boolean', description: 'focus 且 off=true 时停止番茄钟' },
       grade: { type: 'string', enum: GRADES, description: 'review 的打分：again 忘了 / good 记得 / easy 很简单' },
       due: { type: 'string', description: '排期日期 YYYY-MM-DD（review 排期用；省略=今天）' },
@@ -576,7 +627,7 @@ function makeTool() {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String((value && value.message) || '') }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const action = String(args.action || 'board')
       if (!STUDY_DESK_ACTIONS.includes(action)) return { ok: false, message: '未知 action：' + action }
       try {
@@ -595,6 +646,7 @@ function makeTool() {
             note: args.note,
             status: args.status || 'todo',
             estimateMin: args.estimateMin,
+            dueDate: args.dueDate,
             pinned: args.pinned,
             tags: args.tags,
             review: args.review,
@@ -619,7 +671,7 @@ function makeTool() {
           const ref = args.id || args.title
           if (!ref) return { ok: false, message: 'update 需要 id 或 title' }
           const patch = {}
-          for (const k of ['title', 'note', 'subject', 'estimateMin', 'pinned', 'status', 'tags']) {
+          for (const k of ['title', 'note', 'subject', 'estimateMin', 'dueDate', 'pinned', 'status', 'tags']) {
             if (args[k] !== undefined) patch[k] = args[k]
           }
           if (args.review !== undefined) patch.review = !!args.review
@@ -637,17 +689,42 @@ function makeTool() {
             const { state } = await withDesk((s) => resetTimer(s))
             return { ok: true, message: `番茄钟已停。今天已专注 ${fmtMinutes(todayMinutes(state))}。` }
           }
-          const taskRef = args.task
           const named = String(args.title || '').trim().slice(0, 24)
-          const { state, result } = await withDesk((s) => startTimer(s, {
-            minutes: args.minutes,
-            taskId: taskRef,
-            name: named || undefined,
-          }))
+          // exec.agent.id 就是会话 id：存进计时器，走完时自动提醒发回这个会话
+          const agentId = exec && exec.agent && exec.agent.id ? String(exec.agent.id) : null
+          const taskRef = String(args.task || '').trim()
+          const { state, result } = await withDesk((s) => {
+            // AI 起钟的门禁：必须挂一张「进行中」的卡。刻意让 AI 走完
+            // 添加待办 → 移到进行中 → 挂卡起钟 这段流程，AI 安排的任务才会
+            // 真的落在待办墙上，周报和近 30 天统计才对得上。
+            if (!taskRef) {
+              throw new Error('AI 起番茄钟必须挂卡。流程：先 action=add 新建卡（或用 board 挑一张已有卡），'
+                + '再 action=move 把它移到 status=doing，最后 action=focus 且 task=<那张卡的 id 或标题>。')
+            }
+            const task = s.tasks.find((t) => t.id === taskRef
+              || t.title === taskRef
+              || t.title.toLowerCase() === taskRef.toLowerCase())
+            if (!task) {
+              throw new Error(`找不到卡「${taskRef}」。先 action=add 建卡，再用 action=move 移到 status=doing，然后 focus 挂它。`)
+            }
+            if (task.status !== 'doing') {
+              const where = task.status === 'todo' ? '待办' : '已完成'
+              throw new Error(`「${task.title}」现在是「${where}」，不在「进行中」。先 action=move 把它移到 status=doing，再 focus 挂它。`)
+            }
+            return startTimer(s, {
+              minutes: args.minutes,
+              taskId: task.id,
+              name: named || undefined,
+              by: 'ai',
+              sessionId: agentId,
+            })
+          })
           const s = summary(state)
           return {
             ok: true,
-            message: `开始 ${result.minutes} 分钟${result.kind === 'focus' ? '专注' : '休息'}${result.title ? `（${result.title}）` : ''}。今天已专注 ${fmtMinutes(s.today.minutes)} / 目标 ${fmtMinutes(s.today.goal)}。`,
+            message: `开始 ${result.minutes} 分钟${result.kind === 'focus' ? '专注' : '休息'}${result.title ? `（${result.title}）` : ''}。`
+              + `今天已专注 ${fmtMinutes(s.today.minutes)} / 目标 ${fmtMinutes(s.today.goal)}。`
+              + (agentId ? '走完时会自动往本会话发一条提醒。' : ''),
           }
         }
         if (action === 'review') {
@@ -749,6 +826,34 @@ export function apply(ctx, config) {
     reconcile: () => withDesk(null),
     state: () => withDesk(null),
   }
+
+  // 番茄钟提醒的发送端：agents 是宿主的会话服务（官方 goal-round-driver 同款用法）。
+  // 会话已关闭 / 宿主重启后 agents 里没有它 → 静默放弃，不排队不补发。
+  timerEndHook = (info) => {
+    const agents = ctx.get('agents')
+    const agent = agents && typeof agents.get === 'function' ? agents.get(info.sessionId) : null
+    if (!agent || typeof agent.followup !== 'function') return
+    agent.followup({
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: timerEndText(info) }],
+      source: { kind: 'plugin', plugin: name, event: 'timer-end', at: Date.now() },
+    })
+  }
+
+  // 看门狗：面板没开时没人轮询 desk，提醒就得靠它兜底。
+  // 每 10 秒看一眼；只有真有钟在跑且已到点才进串行区结账（顺带触发提醒），平时零写入。
+  ctx.effect(() => {
+    const id = setInterval(() => {
+      try {
+        const st = readDesk()
+        if (st.timer && st.timer.running && st.timer.endsAt <= Date.now()) {
+          withDesk(null).catch(() => {})
+        }
+      } catch { /* 下一轮再看 */ }
+    }, 10000)
+    return () => clearInterval(id)
+  }, 'dsh-study-desk: timer watchdog')
 
   // 给别的插件留一个入口（本插件自己不用，纯便利）：注册服务要用 ctx.provide，
   // ctx.set 只能覆盖已经 provide 过的服务，直接 set 会抛

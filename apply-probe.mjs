@@ -4,7 +4,7 @@
  * 用法：node apply-probe.mjs   （cwd = 本目录，含 index.js/desk.js/timer.js/client.js）
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -222,6 +222,77 @@ check('未知 op 带 error 文案', () => assert.ok(String(JSON.parse(p5.body).e
 
 const p6 = await post({ op: 'task.add' })
 check('缺 title 返回 400', () => assert.equal(p6.code, 400))
+
+// ---- AI 起钟门禁 + 番茄钟走完的会话提醒（督促链路端到端）----
+// stub 一个 agents 服务：宿主提醒走 ctx.get('agents').get(sessionId).followup(消息)
+const agentStub = { id: 'sess-A', followups: [], followup(msg) { this.followups.push(msg) } }
+registered.services.agents = { get(id) { return id === 'sess-A' ? agentStub : undefined } }
+
+const blockedNoTask = await run('focus', { minutes: 25 })
+check('AI 起钟不挂卡被拒，且报错里教了完整流程', () => {
+  assert.equal(blockedNoTask.ok, false)
+  assert.match(blockedNoTask.message, /挂卡/)
+  assert.match(blockedNoTask.message, /action=add/)
+  assert.match(blockedNoTask.message, /status=doing/)
+})
+
+const gateCard = await run('add', { title: '门禁冒烟卡', subject: '英语' })
+check('门禁卡建好', () => assert.equal(gateCard.ok, true))
+const blockedTodo = await run('focus', { minutes: 25, task: '门禁冒烟卡' })
+check('AI 起钟挂待办卡被拒', () => {
+  assert.equal(blockedTodo.ok, false)
+  assert.match(blockedTodo.message, /进行中/)
+})
+
+await run('move', { title: '门禁冒烟卡', status: 'doing' })
+const aiFocus = await tool.execute({ action: 'focus', minutes: 25, task: '门禁冒烟卡' }, { agent: { id: 'sess-A' } })
+check('挂「进行中」的卡可以起钟', () => assert.equal(aiFocus.ok, true))
+check('起钟回执预告了自动提醒', () => assert.match(aiFocus.message, /自动往本会话发一条提醒/))
+check('计时器记下了起钟会话', () => {
+  const t = JSON.parse(readFileSync(join(PROBE_HOME, 'study-desk', 'desk.json'), 'utf8')).timer
+  assert.equal(t.by, 'ai')
+  assert.equal(t.sessionId, 'sess-A')
+})
+
+// 时间快进：把 endsAt 改到过去再 GET，宿主结账 → 提醒送进 stub 会话
+const deskPath = join(PROBE_HOME, 'study-desk', 'desk.json')
+const rawDesk = JSON.parse(readFileSync(deskPath, 'utf8'))
+rawDesk.timer.endsAt = Date.now() - 1000
+rawDesk.timer.startedAt = rawDesk.timer.endsAt - 25 * 60000
+writeFileSync(deskPath, JSON.stringify(rawDesk))
+const nudgeRes = fakeRes()
+await route.handler({ method: 'GET', url: '/api/dsh-study-desk?op=state', headers: {}, on() {} }, nudgeRes)
+check('专注走完 → 提醒以 user 消息送进起钟会话', () => {
+  assert.equal(agentStub.followups.length, 1)
+  const msg = agentStub.followups[0]
+  assert.equal(msg.role, 'user')
+  assert.match(msg.content[0].text, /番茄钟·自动提醒/)
+  assert.match(msg.content[0].text, /25 分钟/)
+  assert.equal(msg.source.kind, 'plugin')
+})
+check('自动摆的休息继承会话标记（链条不断）', () => {
+  const t = JSON.parse(nudgeRes.body).state.timer
+  assert.equal(t.kind, 'break')
+  assert.equal(t.sessionId, 'sess-A')
+})
+
+// 关掉开关：休息走完不再提醒
+await post({ op: 'settings.update', patch: { notifySessionOnTimerEnd: false } })
+const rawDesk2 = JSON.parse(readFileSync(deskPath, 'utf8'))
+rawDesk2.timer.endsAt = Date.now() - 1000
+writeFileSync(deskPath, JSON.stringify(rawDesk2))
+await route.handler({ method: 'GET', url: '/api/dsh-study-desk?op=state', headers: {}, on() {} }, fakeRes())
+check('开关关闭后不再提醒', () => assert.equal(agentStub.followups.length, 1))
+
+// POST timer.start（客户端手动路径）不受门禁限制，也不带会话标记
+const pUser = await post({ op: 'timer.start', minutes: 5, name: '手动起钟' })
+check('手动起钟不需要挂卡', () => {
+  const body = JSON.parse(pUser.body)
+  assert.equal(body.ok, true)
+  assert.equal(body.state.timer.by, null)
+})
+await post({ op: 'timer.reset' })
+await run('remove', { title: '门禁冒烟卡' })
 
 // ---- 复习 / 复盘 / Markdown
 const p7 = await post({ op: 'review.grade', title: 'POST 加的卡', grade: 'easy' })

@@ -26,6 +26,7 @@ function seeded() {
   addTask(s, { title: '英语阅读 2018 Text1', subject: '英语', review: true }, T0)
   const done = addTask(s, { title: '马原原理背诵', subject: '政治', status: 'done' }, T0)
   updateTask(s, a.id, { note: '重点：议程设置\n多看两页' }, T0)
+  updateTask(s, a.id, { dueDate: '2026-11-01' }, T0)
   scheduleTask(s, a.id, '2026-10-06', T0)
   gradeTask(s, done.id, 'good', T0)
   logSession(s, { minutes: 50, at: T0, taskId: a.id })
@@ -52,6 +53,7 @@ test('导出再读回：卡片、标签、笔记、复习排期与复盘都对�
   assert.equal(a.subject, '631 公共管理')
   assert.equal(a.status, 'todo')
   assert.equal(a.estimateMin, 45)
+  assert.equal(a.dueDate, '2026-11-01', 'ddl 机器字段应该往返保留')
   assert.deepEqual(a.tags, ['名词解释', '错题'])
   assert.equal(a.note, '重点：议程设置\n多看两页')
   assert.equal(a.review.due, '2026-10-06')
@@ -128,4 +130,19 @@ test('导出的 Markdown 里不含本机路径，注释能被 Obsidian 阅读模
   assert.ok(!/[A-Za-z]:[\\/]/.test(md), '不该出现 Windows 绝对路径')
   assert.match(md, /<!-- desk:id:[0-9a-f-]+[^>]*due:2026-10-06/)
   assert.match(md, /## 复习 · 到期/)
+  assert.match(md, /ddl:2026-11-01/, '截止日期应该写进行尾机器注释')
+})
+
+test('手写 md 的 ddl: 读回成截止日期；注释里删掉它再读回就清空', () => {
+  const s = normalize(null)
+  const md = [
+    '## 英语', '', '### 待办', '',
+    '- [ ] 交雅思成绩单 <!-- desk:id:x1 ddl:2026-11-30 est:30 -->', '',
+  ].join('\n')
+  mergeMarkdown(s, fromMarkdown(md))
+  assert.equal(s.tasks[0].dueDate, '2026-11-30')
+  const again = mergeMarkdown(s, fromMarkdown(md))
+  assert.deepEqual(again, { added: 0, updated: 0 }, '原样再读一遍不该算改动')
+  mergeMarkdown(s, fromMarkdown(md.replace(' ddl:2026-11-30', '')))
+  assert.equal(s.tasks[0].dueDate, null, 'ddl 没了 = 她删掉了截止，读回时清空')
 })

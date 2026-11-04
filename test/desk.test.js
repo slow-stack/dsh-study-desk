@@ -28,6 +28,7 @@ import {
   summary,
   todayMinutes,
   updateSettings,
+  updateTask,
   weeklyReport,
 } from '../desk.js'
 import { completeTimer, makeTimer, pauseTimer, reconcileTimer, remainingMs, resetTimer, startTimer } from '../timer.js'
@@ -562,4 +563,98 @@ test('「结束这一段」按真实时长记账，「放弃」不记账', () =>
   startTimer(dropped, { minutes: 25, kind: 'focus', title: 'x' }, T0)
   resetTimer(dropped)
   assert.equal(dropped.sessions.length, 0, '放弃不该记账')
+})
+
+test('截止日期：addTask/updateTask 只认 YYYY-MM-DD，别的形状一律清空', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '交开题报告', dueDate: '2026-12-01' }, T0)
+  assert.equal(a.dueDate, '2026-12-01')
+  updateTask(s, a.id, { dueDate: '2026-12-15' }, T0)
+  assert.equal(a.dueDate, '2026-12-15', '合法改期能改上')
+  updateTask(s, a.id, { dueDate: '下周五' }, T0)
+  assert.equal(a.dueDate, null, '非法日期清空，而不是保留旧值')
+  const b = addTask(s, { title: '没有截止', dueDate: '明天' }, T0)
+  assert.equal(b.dueDate, null)
+  updateTask(s, b.id, { dueDate: '' }, T0)
+  assert.equal(b.dueDate, null, '空串就是清除')
+})
+
+test('normalize 认得 dueDate：合法保留、非法丢掉，旧文件没这个字段也不炸', () => {
+  const s = normalize({ tasks: [
+    { id: 'a', title: '有截止', dueDate: '2026-11-20' },
+    { id: 'b', title: '坏截止', dueDate: '12月20日' },
+    { id: 'c', title: '没字段' },
+  ] })
+  assert.equal(s.tasks[0].dueDate, '2026-11-20')
+  assert.equal(s.tasks[1].dueDate, null)
+  assert.equal(s.tasks[2].dueDate, null)
+})
+
+test('summary 的 doing/todo 带上 dueDate（系统提示要拿它提醒她）', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '写综述', dueDate: '2026-10-20' }, T0)
+  assert.equal(summary(s, T0).todo[0].dueDate, '2026-10-20')
+  updateTask(s, a.id, { status: 'doing' }, T0)
+  assert.equal(summary(s, T0).doing[0].dueDate, '2026-10-20', '挪到进行中之后仍然带着截止')
+})
+
+// ---------------------------------------------------------------------------
+// AI 起钟的会话标记与会话提醒素材（番茄钟督促链路）
+// ---------------------------------------------------------------------------
+
+test('AI 起的钟带会话标记，自动摆的休息继承标记，到点收走提醒素材', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', by: 'ai', sessionId: 'sess-A' }, T0)
+  assert.equal(s.timer.by, 'ai')
+  assert.equal(s.timer.sessionId, 'sess-A')
+
+  const ended = []
+  assert.equal(reconcileTimer(s, T0 + 25 * MIN, ended), true)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].kind, 'focus')
+  assert.equal(ended[0].sessionId, 'sess-A')
+  assert.equal(ended[0].endedAt, T0 + 25 * MIN)
+
+  // 休息继承链条：休息走完时提醒还发给同一个会话
+  assert.equal(s.timer.kind, 'break')
+  assert.equal(s.timer.sessionId, 'sess-A')
+  ended.length = 0
+  assert.equal(reconcileTimer(s, T0 + 30 * MIN, ended), true)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].kind, 'break')
+  assert.equal(ended[0].sessionId, 'sess-A')
+})
+
+test('手动起的钟没有会话标记，不产生会话提醒素材', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', minutes: 25 }, T0)
+  assert.equal(s.timer.by, null)
+  assert.equal(s.timer.sessionId, null)
+  const ended = []
+  reconcileTimer(s, T0 + 25 * MIN, ended)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].sessionId, null)
+})
+
+test('手动提前结束后，AI 链条的休息仍然继承会话标记', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', by: 'ai', sessionId: 'sess-B' }, T0)
+  pauseTimer(s, T0 + 10 * MIN)
+  completeTimer(s, T0 + 20 * MIN)
+  assert.equal(s.timer.kind, 'break')
+  assert.equal(s.timer.sessionId, 'sess-B')
+})
+
+test('updateSettings 能开关 notifySessionOnTimerEnd，不传不动它', () => {
+  const s = normalize(null)
+  assert.equal(s.settings.notifySessionOnTimerEnd, undefined, '默认没写进文件（undefined = 开）')
+  updateSettings(s, { notifySessionOnTimerEnd: false })
+  assert.equal(s.settings.notifySessionOnTimerEnd, false)
+  updateSettings(s, { notifySessionOnTimerEnd: true })
+  assert.equal(s.settings.notifySessionOnTimerEnd, true)
+  updateSettings(s, { focusMin: 30 })
+  assert.equal(s.settings.notifySessionOnTimerEnd, true, '别的设置项不该动它')
 })

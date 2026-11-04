@@ -67,6 +67,10 @@ export function makeTimer(state, input, now = Date.now()) {
   // 番茄ToDo 式命名：session.title 是这个番茄的「户口」，饼图按它聚合——起名发生在起钟这一刻。
   // 优先级：手动写的名字 > 挂的卡片标题 > 兜底桶名（账不丢）。
   const custom = String((input && (input.name || input.title)) || '').trim().slice(0, 24)
+  // AI 起的钟记下起钟会话：走完时宿主要往那个会话发自动提醒（督促用）。
+  // by 不是 'ai' 就一律当手动，不存会话，也不提醒——「只有大模型调整番茄钟才用」。
+  const by = input && input.by === 'ai' ? 'ai' : null
+  const sessionId = by === 'ai' ? (String((input && input.sessionId) || '') || null) : null
   const span = minutes * MINUTE
   return {
     kind,
@@ -75,6 +79,8 @@ export function makeTimer(state, input, now = Date.now()) {
     taskId: task ? task.id : null,
     title: custom || (task ? task.title : (kind === 'focus' ? '专注（未命名）' : '')),
     subject: task ? task.subject : String((input && input.subject) || ''),
+    by,
+    sessionId,
     startedAt: now,
     endsAt: now + span,
     running: true,
@@ -130,8 +136,11 @@ function pushFocus(state, timer, minutes, at) {
  * 把已经走完的计时器结账。返回 state 是否被改动。
  * 专注走完 → 记一条 session，并按节奏自动摆上休息；
  * 若人已经离开很久（连休息也过去了），就不再摆一个已经过期的计时器。
+ *
+ * endedSink（可选）收走「哪一段走完了」的素材：宿主拿它给起钟会话发自动提醒。
+ * 传数组进来，走完一段就 push 一条 {kind,title,subject,minutes,by,sessionId,endedAt}。
  */
-export function reconcileTimer(state, now = Date.now()) {
+export function reconcileTimer(state, now = Date.now(), endedSink = null) {
   const t = state.timer
   if (!t || !t.running || !(t.endsAt <= now)) return false
   if (t.kind === 'focus') {
@@ -147,6 +156,9 @@ export function reconcileTimer(state, now = Date.now()) {
         taskId: null,
         title: '',
         subject: '',
+        // 休息继承起钟会话：这条链是 AI 起的，休息走完也要提醒它收尾
+        by: t.by,
+        sessionId: t.sessionId,
         startedAt: t.endsAt,
         endsAt,
         running: true,
@@ -154,8 +166,14 @@ export function reconcileTimer(state, now = Date.now()) {
         spentMs: 0,
       }
       : null
+    if (endedSink) {
+      endedSink.push({ kind: 'focus', title: t.title, subject: t.subject, minutes: t.minutes, by: t.by, sessionId: t.sessionId, endedAt: t.endsAt })
+    }
   } else {
     state.timer = null
+    if (endedSink) {
+      endedSink.push({ kind: 'break', minutes: t.minutes, by: t.by, sessionId: t.sessionId, endedAt: t.endsAt })
+    }
   }
   return true
 }
@@ -176,6 +194,8 @@ export function completeTimer(state, now = Date.now()) {
       taskId: null,
       title: '',
       subject: '',
+      by: t.by,
+      sessionId: t.sessionId,
       startedAt: now,
       endsAt: now + minutes * MINUTE,
       running: true,
