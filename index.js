@@ -27,6 +27,7 @@ import {
   STATUSES,
   addTask,
   allTags,
+  dailyPlanNow,
   dayKey,
   daysUntil,
   deskDir,
@@ -54,6 +55,7 @@ import {
   summary,
   todayMinutes,
   unscheduleTask,
+  updateDailyPlan,
   updateSettings,
   updateTask,
   weeklyReport,
@@ -274,6 +276,8 @@ function snapshot(state) {
     // 饼图：按「这一段的名字」聚合，今天和近 30 天各算一份，客户端只画
     focusPie: { today: focusByName(state, 1, now), month: focusByName(state, 30, now) },
     plan: reviewPlan(state, now, 3),
+    // 每日计划表：宿主单点算好「现在该做什么/下一场是什么」，客户端只画
+    dayPlan: dailyPlanNow(state, now),
     tags: allTags(state),
     weekly: weeklyReport(state, 8, now),
     journal: journalRecent(state, now, 14),
@@ -342,6 +346,7 @@ const MUTATIONS = {
   'task.delete': (state, p) => removeTask(state, p.id || p.title),
   'session.log': (state, p) => logSession(state, p),
   'settings.update': (state, p) => updateSettings(state, p.patch || p),
+  'dailyPlan.update': (state, p) => updateDailyPlan(state, p.patch || p),
   'review.grade': (state, p) => gradeTask(state, p.id || p.title, p.grade),
   'review.schedule': (state, p) => scheduleTask(state, p.id || p.title, p.due),
   'review.unschedule': (state, p) => unscheduleTask(state, p.id || p.title),
@@ -451,6 +456,17 @@ function boardText(state) {
   const ms = nextMilestone(state)
   if (ms) lines.push(`- 最近节点：${ms.label} ${ms.start}${ms.end !== ms.start ? '~' + ms.end : ''}（${ms.text}${ms.approx ? '，日期按往年惯例估' : ''}）`)
   lines.push(`- 今日专注 ${fmtMinutes(s.today.minutes)} / 目标 ${fmtMinutes(s.today.goal)}，连续打卡 ${s.streak} 天`)
+  // 每日计划表：开了就告诉模型「现在按计划该做什么」，它才能对着计划督促
+  const dayPlan = dailyPlanNow(state)
+  if (dayPlan.items.length) {
+    const hhmm = new Date().toTimeString().slice(0, 5)
+    if (dayPlan.current) {
+      lines.push(`- 按每日计划，现在（${hhmm}）应该在：「${dayPlan.current.label}」（${dayPlan.current.start}~${dayPlan.current.end}）${dayPlan.current.subject ? `【${dayPlan.current.subject}】` : ''}`)
+    } else {
+      lines.push(`- 按每日计划，现在（${hhmm}）不在任何计划时间段里`)
+    }
+    if (dayPlan.next) lines.push(`- 下一场 ${dayPlan.next.start} 开始：「${dayPlan.next.label}」${dayPlan.next.subject ? `【${dayPlan.next.subject}】` : ''}`)
+  }
   if (s.doing.length) {
     lines.push('- 进行中 ' + s.counts.doing + '：' + s.doing.map((t) => `${t.title}${t.dueDate ? `【${t.dueDate} 截止】` : ''}${t.minutes ? `（已投入 ${fmtMinutes(t.minutes)}）` : ''}`).join(' ｜ '))
   } else {

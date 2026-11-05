@@ -35,10 +35,13 @@ for (const f of ['desk.json', 'bbdc.json']) {
 process.env.DSH_HOME = HOME
 
 const routes = []
+const disposers = []
 const ctx = {
   tools: { register: () => () => {} },
   webServer: { register: (r) => { routes.push(r); return () => {} } },
-  effect: (f) => { f(); return () => {} },
+  // 快照取完就把 effect 的清理函数都跑掉：宿主半边现在带着 10 秒看门狗
+  // setInterval（番茄钟会话提醒的兜底），不清理这个进程永远退不出去。
+  effect: (f) => { const d = f(); if (typeof d === 'function') disposers.push(d); return () => {} },
   on: () => () => {},
   set: (k, v) => { services[k] = v },
   provide: (k, v) => { services[k] = v; return () => {} },
@@ -50,6 +53,7 @@ const ctx = {
 const services = {}
 const host = await import('../index.js')
 host.apply(ctx, {})
+for (const d of disposers) { try { d() } catch { /* 清理失败无所谓 */ } }
 
 function fakeRes() {
   const res = { code: 0, chunks: [] }
@@ -168,6 +172,13 @@ window.fetch = async (url, opts) => {
   // 让假宿主稍微带点状态：settings.update 真把 patch 合进快照，
   // 这样才能验「输入 90 → 秒表显示 90:00」这条链，而不是只验渲染出来了个输入框。
   if (body.op === 'settings.update' && body.patch) Object.assign(window.__SNAPSHOT__.state.settings, body.patch)
+  // ?plan=1 验每日计划表时要能点设置页开关：假宿主把 patch 合回 dailyPlan
+  if (body.op === 'dailyPlan.update' && body.patch) {
+    const dp = window.__SNAPSHOT__.state.dailyPlan = window.__SNAPSHOT__.state.dailyPlan || { enabled: false, float: false, items: [] }
+    if ('enabled' in body.patch) dp.enabled = !!body.patch.enabled
+    if ('float' in body.patch) dp.float = !!body.patch.float
+    if (body.patch.items) dp.items = body.patch.items
+  }
   return { ok: true, status: 200, json: async () => window.__SNAPSHOT__ }
 }
 `
@@ -220,6 +231,17 @@ setTimeout(() => {
       el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     }
   }
+  // ?planopen=1：把计划表悬浮件展开（验全天列表渲染得出来）
+  if (Q.get('planopen') === '1') {
+    const btn = document.querySelector('.sd-plandock .sd-plandock-main button')
+    if (btn) ReactDOM.flushSync(() => btn.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
+  // ?planfloatoff=1：从设置页把「悬浮在桌面上」关掉（验开关 → 悬浮件消失这条链）。
+  // 设置页里的 checkbox 顺序：计划表启用(0) / 计划表悬浮(1) / 注入提示(2) / 走完提醒(3)
+  if (Q.get('planfloatoff') === '1') {
+    const cb = document.querySelectorAll('#settings input[type=checkbox]')[1]
+    if (cb) ReactDOM.flushSync(() => cb.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
   setTimeout(() => {
     const diag = document.getElementById('diag')
     const rectOf = (sel) => { const el = document.querySelector(sel); if (!el) return 'none'; const r = el.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(',') }
@@ -244,6 +266,12 @@ setTimeout(() => {
     'heatRect=' + rectOf('.sd-heat'),
     'forecastRect=' + rectOf('.sd-forecast'),
       'mini=' + document.querySelectorAll('.sd-mini').length,
+      'plandock=' + document.querySelectorAll('.sd-plandock').length,
+      'plandockFab=' + document.querySelectorAll('.sd-plandock-fab').length,
+      'plandockPanel=' + document.querySelectorAll('.sd-plandock-panel').length,
+      'planRows=' + document.querySelectorAll('.sd-plan-row').length,
+      'planNow=' + document.querySelectorAll('.sd-plan-row.now').length,
+      'planSection=' + document.querySelectorAll('.sd-plan-card').length,
       'calls=' + window.__calls.join(','),
       'errText=' + (err ? String(err.textContent).slice(0, 160) : 'none'),
       'bootErr=' + (window.__bootError || 'none'),
@@ -264,6 +292,23 @@ html,body{margin:0;height:100%;font-family:var(--dsw-font-family);}
 #main2,#settings{display:none}
 `
 
+// ?plan=1 时伪造一份「开了每日计划表」的快照：围绕当前钟点构造几段，
+// 让「现在」永远落在中间那段里（跨午夜的边角由 :59 收尾兜住）。
+// 悬浮件开不开、当前时段有没有，从诊断行的 plandock*/planRows/planNow 读。
+const planPatch = String.raw`
+if (new URLSearchParams(location.search).get('plan') === '1') {
+  const d = new Date()
+  const hh = (n) => String(n).padStart(2, '0')
+  const nowH = d.getHours()
+  const items = []
+  if (nowH > 0) items.push({ id: 'p0', start: hh(nowH - 1) + ':00', end: hh(nowH) + ':00', label: '上一段（已过）', subject: '政治' })
+  items.push({ id: 'p1', start: hh(nowH) + ':00', end: hh(nowH) + ':59', label: '现在的时段', subject: '631 公共管理' })
+  if (nowH < 22) items.push({ id: 'p2', start: hh(nowH + 1) + ':00', end: hh(nowH + 2) + ':00', label: '下一场', subject: '英语' })
+  window.__SNAPSHOT__.state.dailyPlan = { enabled: true, float: true, items }
+  window.__SNAPSHOT__.dayPlan = { current: items[1], next: items[2] || null, items }
+}
+`
+
 const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>study-desk harness</title>
 <style id="host-tokens">${tokens.light}\n${tokens.dark}</style>
@@ -277,7 +322,7 @@ const html = `<!doctype html>
 <div id="main2"></div><div id="settings"></div>
 <pre id="diag" style="position:fixed;left:-9999px;top:0"></pre>
 <script>${boot}</script>
-<script>window.__SNAPSHOT__ = ${JSON.stringify(snapshot)}</script>
+<script>window.__SNAPSHOT__ = ${JSON.stringify(snapshot)};${planPatch}</script>
 <script src="react.js"></script><script src="react-dom.js"></script>
 <script src="client.__CLIENT__.js"></script>
 <script>${mount}</script>
@@ -311,3 +356,5 @@ h2{font-size:12px;letter-spacing:.12em;font-weight:600;color:var(--dsw-alias-lab
 writeFileSync(join(OUT, 'palette-light.html'), palettePage(false))
 writeFileSync(join(OUT, 'palette-dark.html'), palettePage(true))
 console.log('[done] .shots/panel-{new,old}.html .shots/palette-{light,dark}.html (' + PIE_TONES.length + ' tones)')
+// client-loader 载入 client.js 会把盯倒计时的 setInterval 挂起来（apply-probe 同款坑），显式退出
+process.exit(0)

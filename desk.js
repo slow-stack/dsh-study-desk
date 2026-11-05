@@ -184,6 +184,7 @@ function freshState() {
     journal: {},
     timer: null,
     settings: { ...DEFAULT_SETTINGS, subjects: DEFAULT_SETTINGS.subjects.map((s) => ({ ...s })) },
+    dailyPlan: { enabled: false, float: false, items: [] },
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
@@ -241,6 +242,7 @@ export function normalize(raw) {
     reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
     journal: raw.journal && typeof raw.journal === 'object' ? raw.journal : {},
     settings: { ...base.settings, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+    dailyPlan: normalizeDailyPlan(raw.dailyPlan),
   }
   if (!Array.isArray(state.settings.subjects) || state.settings.subjects.length === 0) {
     state.settings.subjects = base.settings.subjects.map((s) => ({ ...s }))
@@ -522,6 +524,82 @@ export function updateSettings(state, patch) {
   }
   state.settings = next
   return next
+}
+
+// ---------------------------------------------------------------------------
+// 每日计划表：哪个时间段做什么事。每天的固定模板（不按日期存，改模板=改每一天）。
+// 数据在 state.dailyPlan；「现在该做什么」由 dailyPlanNow 单点算——
+// 注入 system prompt 与快照都从它取，客户端只画不算。
+// ---------------------------------------------------------------------------
+
+/** 'HH:MM' → 当天分钟数。非法输入返回 NaN。 */
+export function planMinutes(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim())
+  if (!m) return NaN
+  const h = Number(m[1])
+  const min = Number(m[2])
+  if (h > 23 || min > 59) return NaN
+  return h * 60 + min
+}
+
+const MAX_PLAN_ITEMS = 48
+
+function normalizeDailyPlan(raw) {
+  const base = { enabled: false, float: false, items: [] }
+  if (!raw || typeof raw !== 'object') return base
+  const seen = new Set()
+  const items = []
+  for (const it of Array.isArray(raw.items) ? raw.items : []) {
+    if (!it || typeof it !== 'object') continue
+    const start = String(it.start || '').trim()
+    const end = String(it.end || '').trim()
+    const label = String(it.label || '').trim().slice(0, 60)
+    if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) continue
+    if (!label) continue
+    const s = planMinutes(start)
+    const e = planMinutes(end)
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s >= e) continue // 跨午夜不支持；写反的整条丢掉
+    let id = String(it.id || '').trim()
+    if (!id || seen.has(id)) id = randomUUID()
+    seen.add(id)
+    items.push({ id, start, end, label, subject: String(it.subject || '').trim().slice(0, 30) })
+    if (items.length >= MAX_PLAN_ITEMS) break
+  }
+  items.sort((a, b) => planMinutes(a.start) - planMinutes(b.start) || planMinutes(a.end) - planMinutes(b.end))
+  return {
+    enabled: raw.enabled === true,
+    float: raw.float === true,
+    items,
+  }
+}
+
+export function updateDailyPlan(state, patch) {
+  const p = patch || {}
+  const cur = normalizeDailyPlan(state.dailyPlan)
+  state.dailyPlan = normalizeDailyPlan({
+    enabled: p.enabled !== undefined ? p.enabled : cur.enabled,
+    float: p.float !== undefined ? p.float : cur.float,
+    items: p.items !== undefined ? p.items : cur.items,
+  })
+  return state.dailyPlan
+}
+
+/** 现在在哪个计划区间里、下一场是什么。enabled=false 或没条目时 items 照发，current/next 为 null。 */
+export function dailyPlanNow(state, now = Date.now()) {
+  const plan = state.dailyPlan || { enabled: false, items: [] }
+  const items = Array.isArray(plan.items) ? plan.items : []
+  const empty = { current: null, next: null, items }
+  if (plan.enabled !== true || !items.length) return empty
+  const d = new Date(now)
+  const mins = d.getHours() * 60 + d.getMinutes()
+  let current = null
+  let next = null
+  for (const it of items) {
+    const s = planMinutes(it.start)
+    if (mins >= s && mins < planMinutes(it.end)) current = it
+    else if (s > mins && !next) next = it
+  }
+  return { current, next, items }
 }
 
 // ---------------------------------------------------------------------------

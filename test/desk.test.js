@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   addTask,
+  dailyPlanNow,
   dayKey,
   daysUntil,
   dueQueue,
@@ -16,6 +17,7 @@ import {
   normalize,
   normalizeTags,
   parseMilestones,
+  planMinutes,
   reorderTask,
   reviewForecast,
   reviewPlan,
@@ -27,6 +29,7 @@ import {
   subjectBreakdown,
   summary,
   todayMinutes,
+  updateDailyPlan,
   updateSettings,
   updateTask,
   weeklyReport,
@@ -657,4 +660,64 @@ test('updateSettings 能开关 notifySessionOnTimerEnd，不传不动它', () =>
   assert.equal(s.settings.notifySessionOnTimerEnd, true)
   updateSettings(s, { focusMin: 30 })
   assert.equal(s.settings.notifySessionOnTimerEnd, true, '别的设置项不该动它')
+})
+
+// ---------------------------------------------------------------------------
+// 每日计划表：时间段模板 + 「现在该做什么」单点计算
+// ---------------------------------------------------------------------------
+
+test('normalizeDailyPlan：坏行丢掉、好行保留、按开始时刻排序', () => {
+  const s = normalize({ dailyPlan: { enabled: true, items: [
+    { start: '14:00', end: '16:00', label: '864 论述练习' },
+    '这不是对象',
+    { start: '08:00', end: '09:30', label: '背单词', subject: '英语' },
+    { start: '09:30', end: '08:00', label: '起终写反' },
+    { start: '25:00', end: '26:00', label: '非法时刻' },
+    { start: '08:00', end: '09:00', label: '' },            // 没名字的丢
+    { start: '12:00', end: '13:00', label: '午休', id: 'x' },
+    { start: '07:00', end: '07:40', label: '早读', id: 'x' }, // id 撞了会重发一个
+  ] } })
+  const items = s.dailyPlan.items
+  assert.equal(items.length, 4)
+  assert.deepEqual(items.map((x) => x.label), ['早读', '背单词', '午休', '864 论述练习'], '按开始时刻排好了')
+  assert.notEqual(items[1].id, 'x', '撞 id 的那条要重新发 id')
+  assert.equal(s.dailyPlan.enabled, true)
+  assert.equal(s.dailyPlan.float, false)
+})
+
+test('dailyPlanNow：区间命中与下一场', () => {
+  const s = normalize({ dailyPlan: { enabled: true, items: [
+    { start: '08:00', end: '09:30', label: '背单词' },
+    { start: '14:00', end: '16:00', label: '864 论述练习' },
+  ] } })
+  // 用固定一天里的时刻构造 now（本地时区）
+  const at = (h, m) => new Date(2026, 10, 5, h, m).getTime()
+  assert.equal(dailyPlanNow(s, at(8, 15)).current.label, '背单词')
+  assert.equal(dailyPlanNow(s, at(8, 15)).next.label, '864 论述练习')
+  assert.equal(dailyPlanNow(s, at(9, 30)).current, null, 'end 时刻已切出区间')
+  assert.equal(dailyPlanNow(s, at(9, 30)).next.label, '864 论述练习')
+  assert.equal(dailyPlanNow(s, at(23, 59)).current, null)
+  assert.equal(dailyPlanNow(s, at(23, 59)).next, null, '当天没有下一场了')
+  assert.equal(dailyPlanNow(s, at(15, 0)).current.minutes, undefined, 'current 就是条目本身')
+})
+
+test('dailyPlanNow：没启用就只发条目不发判定', () => {
+  const s = normalize({ dailyPlan: { items: [{ start: '08:00', end: '09:00', label: '背单词' }] } })
+  const now = dailyPlanNow(s)
+  assert.equal(now.current, null)
+  assert.equal(now.items.length, 1, '条目照发，客户端设置页编辑器还要用它')
+  assert.equal(dailyPlanNow(normalize(null)).items.length, 0)
+})
+
+test('updateDailyPlan：单独开关 enabled/float，互不牵连', () => {
+  const s = normalize({ dailyPlan: { enabled: true, float: true, items: [
+    { start: '08:00', end: '09:00', label: '背单词' },
+  ] } })
+  updateDailyPlan(s, { float: false })
+  assert.equal(s.dailyPlan.enabled, true)
+  assert.equal(s.dailyPlan.float, false)
+  assert.equal(s.dailyPlan.items.length, 1, '开关不动条目')
+  updateDailyPlan(s, { enabled: false, items: [] })
+  assert.equal(s.dailyPlan.enabled, false)
+  assert.equal(s.dailyPlan.items.length, 0)
 })

@@ -12,7 +12,7 @@
  * 挂载点：
  *   sidebar.panellist  → 左侧栏图标（id 与 main 的 key 同名，侧栏自动 dispatch）
  *   main (keyed)       → 整页工作台
- *   shell.overlay      → 右下角常驻迷你计时条（跨面板存活）
+ *   shell.overlay      → 右下角常驻迷你计时条 + 每日计划表悬浮件（跨面板存活，各一个槽位）
  *   settings.section   → 「学习工作台」设置页
  */
 
@@ -48,6 +48,8 @@ window.__ModuleLoader__.load({
     // 单词打卡是第二个独立面板：侧栏一项 + main 一格，id 与 main 的 key 必须同名
     const BBCDC_PANEL_ID = 'study-desk-bbdc'
     const MINI_POS_KEY = 'dsh-study-desk:mini-pos'
+    // 每日计划表悬浮件的落点：和迷你条一样是纯本地偏好，不占 desk.json
+    const PLAN_POS_KEY = 'dsh-study-desk:plan-pos'
 
     const STATUS_META = [
       { id: 'todo', label: '待办', latin: 'TODO' },
@@ -158,7 +160,7 @@ window.__ModuleLoader__.load({
     const store = {
       ready: false,
       error: null,
-      state: { tasks: [], sessions: [], reviews: [], journal: {}, timer: null, settings: {} },
+      state: { tasks: [], sessions: [], reviews: [], journal: {}, timer: null, settings: {}, dailyPlan: { enabled: false, float: false, items: [] } },
       minutes: {},
       todayMinutes: 0,
       streak: 0,
@@ -169,6 +171,8 @@ window.__ModuleLoader__.load({
       forecast: { days: [], later: 0, total: 0, max: 0 },
       focusPie: null,
       plan: { items: [], due: 0, cap: 10, advice: null },
+      // 每日计划表：宿主算好「现在/下一场」，这里只缓存
+      dayPlan: { current: null, next: null, items: [] },
       tags: [],
       weekly: { weeks: [], goalWeekly: 0 },
       journalLog: [],
@@ -206,6 +210,7 @@ window.__ModuleLoader__.load({
         this.forecast = json.forecast || this.forecast
         this.focusPie = json.focusPie || this.focusPie
         this.plan = json.plan || this.plan
+        this.dayPlan = json.dayPlan || this.dayPlan
         this.tags = json.tags || []
         this.weekly = json.weekly || this.weekly
         this.journalLog = json.journal || []
@@ -459,6 +464,8 @@ window.__ModuleLoader__.load({
           'M14 13.5l1.7 1.2',
         ],
         clock: ['M10 3.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z', 'M10 6.5v4l2.5 1.5'],
+        // 每日计划表：日历框 + 两个吊耳 + 指针（区别于纯时钟，讲「时间段」）
+        plancal: ['M3.5 6h13v11h-13z', 'M3.5 9h13', 'M7 4v2.5', 'M13 4v2.5', 'M10 11v2.5', 'M10 13.5l1.8 1.3'],
         play: ['M6.5 4.8v10.4l8-5.2z'],
         pause: ['M7 4.8v10.4', 'M13 4.8v10.4'],
         stop: ['M6 6h8v8H6z'],
@@ -2115,6 +2122,7 @@ window.__ModuleLoader__.load({
             h(Head, { key: 'head', now }),
             h(TimerPanel, { key: 'timer', now }),
             s.error ? h('div', { className: 'sd-error', key: 'err' }, '工作台数据读取失败：' + s.error) : null,
+            h(DayPlanSection, { key: 'dayplan', now }),
             h(ReviewQueue, { key: 'review' }),
             h('div', { className: 'sd-section-title', key: 'st' }, [
               h('span', { key: 'a' }, '待办墙'),
@@ -2133,6 +2141,47 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sd-foot', key: 'f' },
               `数据：${s.deskFile || '—'}${s.version ? ` · dsh-study-desk v${s.version}` : ''}`),
           ])),
+      ])
+    }
+
+    // -----------------------------------------------------------------------
+    // 每日计划表（主面板分区）：哪个时间段做什么事。
+    // 区间数据与排序全部由宿主发来（desk.js 的 dailyPlanNow 单点算），
+    // 这里只做钟表运算——当前分钟落在哪个区间里，跟画倒计时是一档的事。
+    // -----------------------------------------------------------------------
+
+    /** 'HH:MM' → 当天分钟数。纯钟表换算，客户端/宿主各有一份（宿主的带校验）。 */
+    function pmin(hhmm) {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim())
+      if (!m) return NaN
+      return Number(m[1]) * 60 + Number(m[2])
+    }
+
+    function DayPlanSection({ now }) {
+      const s = useStore()
+      const dp = (s.state && s.state.dailyPlan) || null
+      if (!dp || dp.enabled !== true || !Array.isArray(dp.items) || !dp.items.length) return null
+      const d = new Date(now)
+      const mins = d.getHours() * 60 + d.getMinutes()
+      const rows = dp.items.map((it) => {
+        const from = pmin(it.start)
+        const to = pmin(it.end)
+        const state = mins >= from && mins < to ? 'now' : mins >= to ? 'past' : 'todo'
+        return { it, state, left: state === 'now' ? Math.max(1, to - mins) : 0 }
+      })
+      return h('div', { key: 'wrap' }, [
+        h('div', { className: 'sd-section-title' }, [
+          h('span', { key: 'a' }, '每日计划表'),
+          h('span', { className: 'sd-section-hint', key: 'b' }, '时间段在设置页编辑；开着的时候模型也会从系统提示里知道现在该做什么'),
+        ]),
+        h('div', { className: 'sd-plan-card' }, rows.map(({ it, state, left }) =>
+          h('div', { className: 'sd-plan-row ' + state, key: it.id }, [
+            h('span', { className: 'sd-plan-time', key: 't' }, `${it.start}~${it.end}`),
+            h('span', { className: 'sd-plan-label', key: 'l', title: it.label }, it.label),
+            it.subject ? h('span', { className: 'sd-plan-subject', key: 's' }, it.subject) : null,
+            state === 'now' ? h('span', { className: 'sd-plan-flag', key: 'x' }, `剩 ${left} 分钟`) : null,
+            state === 'past' ? h('span', { className: 'sd-plan-flag past', key: 'x' }, '已过') : null,
+          ]))),
       ])
     }
 
@@ -2189,10 +2238,11 @@ window.__ModuleLoader__.load({
     // 悬浮卡片被谁盖住，在浏览器里根本看不见：拿命中测试结果回传宿主写盘。
     // reportDiag 按 kind+where+message 去重，所以反复探也不会把诊断文件灌爆。
     // 被盖分两档：盖的人住在宿主模态层（z≥1000：模态框 1000、菜单/气泡 1100）里，
-    // 是迷你条「压在模态下」这条设计取舍的必然结果，不算事故 —— 单独记 mini-under-modal；
-    // 普通内容盖上来才是真回归，继续记 mini-covered。2026-11-05 那次误报就是设置页
+    // 是悬浮件「压在模态下」这条设计取舍的必然结果，不算事故 —— 单独记 <tag>-under-modal；
+    // 普通内容盖上来才是真回归，继续记 <tag>-covered。2026-11-05 那次误报就是设置页
     // （z≥1000）的账号卡片盖住了它，翻诊断时差点当 bug 修。
-    function probeOverlayHit(el) {
+    // tag 区分两个悬浮件（mini=迷你条，plandock=每日计划表），诊断里能分开看。
+    function probeOverlayHit(el, tag = 'mini') {
       if (!el || typeof document.elementFromPoint !== 'function') return
       const rect = el.getBoundingClientRect()
       if (!rect.width || !rect.height) return
@@ -2215,8 +2265,8 @@ window.__ModuleLoader__.load({
         }
       }
       reportDiag({
-        kind: modalZ ? 'mini-under-modal' : 'mini-covered',
-        where: 'mini.命中测试',
+        kind: modalZ ? `${tag}-under-modal` : `${tag}-covered`,
+        where: `${tag}.命中测试`,
         message: `中心 ${cx},${cy} 命中的是 ${chain.join(' < ')}` + (modalZ ? `（宿主模态层 z=${modalZ}，设计内让位）` : ''),
       })
     }
@@ -2313,8 +2363,8 @@ window.__ModuleLoader__.load({
       }, [])
 
       React.useEffect(() => {
-        probeOverlayHit(rootRef.current)
-        const id = setInterval(() => probeOverlayHit(rootRef.current), 5000)
+        probeOverlayHit(rootRef.current, 'mini')
+        const id = setInterval(() => probeOverlayHit(rootRef.current, 'mini'), 5000)
         return () => clearInterval(id)
       }, [])
 
@@ -2425,6 +2475,182 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
+    // 每日计划表悬浮件（shell.overlay 第二件）
+    // 与迷你条同一套坑位规矩：portal 到 body、pointer-events:auto、z-index:900、
+    // no-drag、clampMiniPos 顶部避开标题栏拖拽带、落点存 localStorage。
+    // 开关：dailyPlan.enabled 开整个功能，dailyPlan.float 单独管这件悬浮。
+    // -----------------------------------------------------------------------
+
+    function readPlanPos() {
+      try {
+        const raw = window.localStorage.getItem(PLAN_POS_KEY)
+        if (!raw) return null
+        const p = JSON.parse(raw)
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y }
+      } catch (error) { /* 读不到就当没挪过 */ }
+      return null
+    }
+
+    function writePlanPos(p) {
+      try {
+        if (!p) window.localStorage.removeItem(PLAN_POS_KEY)
+        else window.localStorage.setItem(PLAN_POS_KEY, JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) }))
+      } catch (error) { /* 写不进去就这一次不记 */ }
+    }
+
+    function PlanDock() {
+      const s = useStore()
+      const now = useTick(1000)
+      usePoll(60000)
+      const [open, setOpen] = React.useState(false)
+      const [hidden, setHidden] = React.useState(false)
+      const [pos, setPos] = React.useState(readPlanPos)
+      const dragRef = React.useRef(null)
+      const rootRef = React.useRef(null)
+      const justDraggedRef = React.useRef(false)
+      // 钩子全部走完再决定渲不渲染：开关翻动的瞬间不能少调钩子
+      const dp = (s.state && s.state.dailyPlan) || null
+      const live = Boolean(dp && dp.enabled === true && dp.float === true
+        && Array.isArray(dp.items) && dp.items.length > 0)
+
+      React.useEffect(() => {
+        setPos((current) => {
+          if (!current) return current
+          const el = rootRef.current
+          if (!el) return current
+          const rect = el.getBoundingClientRect()
+          return clampMiniPos(current, rect.width, rect.height)
+        })
+      }, [hidden, open])
+
+      React.useEffect(() => {
+        function onResize() {
+          setPos((current) => {
+            if (!current) return current
+            const el = rootRef.current
+            if (!el) return current
+            const rect = el.getBoundingClientRect()
+            return clampMiniPos(current, rect.width, rect.height)
+          })
+        }
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+      }, [])
+
+      React.useEffect(() => {
+        probeOverlayHit(rootRef.current, 'plandock')
+        const id = setInterval(() => probeOverlayHit(rootRef.current, 'plandock'), 5000)
+        return () => clearInterval(id)
+      }, [])
+
+      if (!live) return null
+
+      const d = new Date(now)
+      const mins = d.getHours() * 60 + d.getMinutes()
+      const current = dp.items.find((it) => mins >= pmin(it.start) && mins < pmin(it.end)) || null
+      const next = dp.items.find((it) => pmin(it.start) > mins) || null
+      const leftMin = current ? Math.max(1, pmin(current.end) - mins) : 0
+
+      // 拖动手势与迷你条同一套：非按钮处按下起拖、挪 4px 内不算拖、双击回默认位
+      const dragHandlers = {
+        onPointerDown: (event) => {
+          if (event.button !== 0) return
+          if (event.target && event.target.closest && event.target.closest('button')) return
+          const el = event.currentTarget
+          const rect = el.getBoundingClientRect()
+          dragRef.current = {
+            dx: event.clientX - rect.left,
+            dy: event.clientY - rect.top,
+            w: rect.width,
+            h: rect.height,
+            sx: event.clientX,
+            sy: event.clientY,
+            moved: false,
+          }
+          try { el.setPointerCapture(event.pointerId) } catch (error) { /* 拿不到捕获也照样能拖 */ }
+        },
+        onPointerMove: (event) => {
+          const dr = dragRef.current
+          if (!dr) return
+          if (event.buttons === 0) { dragRef.current = null; return }
+          if (!dr.moved && Math.abs(event.clientX - dr.sx) + Math.abs(event.clientY - dr.sy) < 4) return
+          dr.moved = true
+          setPos(clampMiniPos({ x: event.clientX - dr.dx, y: event.clientY - dr.dy }, dr.w, dr.h))
+        },
+        onPointerUp: (event) => {
+          const dr = dragRef.current
+          dragRef.current = null
+          if (!dr) return
+          try { event.currentTarget.releasePointerCapture(event.pointerId) } catch (error) { /* 同上 */ }
+          if (dr.moved) {
+            justDraggedRef.current = true
+            setTimeout(() => { justDraggedRef.current = false }, 0)
+            const nextPos = clampMiniPos({ x: event.clientX - dr.dx, y: event.clientY - dr.dy }, dr.w, dr.h)
+            setPos(nextPos)
+            writePlanPos(nextPos)
+          }
+        },
+        onPointerCancel: () => { dragRef.current = null },
+        onLostPointerCapture: () => { dragRef.current = null },
+        onDoubleClick: (event) => {
+          if (event.target && event.target.closest && event.target.closest('button')) return
+          setPos(null); writePlanPos(null)
+        },
+      }
+      const posStyle = pos ? { left: pos.x + 'px', top: pos.y + 'px', right: 'auto', bottom: 'auto' } : null
+
+      if (hidden) {
+        return toTopLayer(h('button', Object.assign({
+          ref: rootRef,
+          className: 'sd-plandock-fab',
+          title: '展开每日计划（可拖动，双击回右侧）',
+          onClick: () => { if (!justDraggedRef.current) setHidden(false) },
+          style: posStyle,
+        }, dragHandlers), h(Icon, { name: 'plancal', size: 14 })))
+      }
+
+      const rows = dp.items.map((it) => {
+        const from = pmin(it.start)
+        const to = pmin(it.end)
+        const state = mins >= from && mins < to ? 'now' : mins >= to ? 'past' : 'todo'
+        return { it, state, left: state === 'now' ? Math.max(1, to - mins) : 0 }
+      })
+
+      return toTopLayer(h('div', Object.assign({
+        ref: rootRef,
+        className: 'sd-plandock' + (open ? ' open' : ''),
+        style: posStyle,
+      }, dragHandlers), [
+        h('div', { className: 'sd-plandock-main', key: 'm' }, [
+          h('span', { key: 'g', className: 'sd-mini-grip', title: '按住这里拖动（双击回右侧）' }),
+          h('span', { key: 'i', className: 'sd-plandock-icon' }, h(Icon, { name: 'plancal', size: 14 })),
+          h('span', { key: 'c', className: 'sd-plandock-now' },
+            current
+              ? `${current.label} · 剩 ${leftMin} 分钟`
+              : next
+                ? `下场 ${next.start} ${next.label}`
+                : '今日无安排'),
+          h('button', {
+            key: 'x',
+            className: 'sd-iconbtn sm',
+            title: open ? '收起' : '展开全天',
+            onClick: () => setOpen((v) => !v),
+          }, h(Icon, { name: open ? 'collapse' : 'expand', size: 14 })),
+        ]),
+        open ? h('div', { className: 'sd-plandock-panel', key: 'p' }, [
+          ...rows.map(({ it, state, left }) => h('div', { className: 'sd-plan-row ' + state, key: it.id }, [
+            h('span', { className: 'sd-plan-time', key: 't' }, `${it.start}~${it.end}`),
+            h('span', { className: 'sd-plan-label', key: 'l', title: it.label }, it.label),
+            state === 'now' ? h('span', { className: 'sd-plan-flag', key: 'x' }, `剩 ${left} 分`) : null,
+          ])),
+          h('div', { className: 'sd-mini-row sd-mini-actions', key: 'a' }, [
+            h('button', { key: 'hide', className: 'sd-textbtn', onClick: () => { setOpen(false); setHidden(true) } }, '收起成小圆点'),
+          ]),
+        ]) : null,
+      ]))
+    }
+
+    // -----------------------------------------------------------------------
     // 设置页
     // -----------------------------------------------------------------------
 
@@ -2524,6 +2750,69 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    /**
+     * 每日计划表编辑器：一行一个时间段 `HH:MM~HH:MM 事情 【科目】`。
+     * 解析只做形状预检（起 < 终），真正落库的规矩在 desk.js normalizeDailyPlan 一处
+     * ——坏行被忽略，草稿文本不会被洗掉（洗掉会把她正在打的字吞了）。
+     */
+    function planItemsToText(items) {
+      return (items || []).map((it) =>
+        `${it.start}~${it.end} ${it.label}${it.subject ? ` 【${it.subject}】` : ''}`).join('\n')
+    }
+
+    function planItemsFromText(text) {
+      const out = []
+      for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+        const m = /^\s*(\d{1,2}):\s*(\d{2})\s*~\s*(\d{1,2}):\s*(\d{2})\s+(.+?)\s*(?:【(.+?)】)?\s*$/.exec(line)
+        if (!m) continue
+        const start = `${m[1].padStart(2, '0')}:${m[2]}`
+        const end = `${m[3].padStart(2, '0')}:${m[4]}`
+        if (pmin(start) >= pmin(end)) continue
+        out.push({ start, end, label: m[5].trim(), subject: (m[6] || '').trim() })
+      }
+      return out
+    }
+
+    function DayPlanField({ value, onCommit }) {
+      const dp = value || { enabled: false, float: false, items: [] }
+      const text = planItemsToText(dp.items)
+      const [draft, setDraft] = React.useState(text)
+      React.useEffect(() => setDraft(text), [text])
+      const dirty = draft !== text
+      const patch = (p) => onCommit({ patch: p })
+      const commit = () => { if (dirty) patch({ items: planItemsFromText(draft) }) }
+      return h('div', { className: 'sd-field', key: 'dp' }, [
+        h('span', { className: 'sd-field-label' }, '每日计划表（哪个时间段做什么）'),
+        h('div', { className: 'sd-row', key: 'sw' }, [
+          h('label', { className: 'sd-field sd-field-inline', key: 'en' }, [
+            h('input', {
+              type: 'checkbox', checked: dp.enabled === true,
+              onChange: (e) => patch({ enabled: e.target.checked }),
+            }),
+            h('span', {}, '启用'),
+            h('span', { className: 'sd-field-hint' }, '开着时主面板会显示，模型也从系统提示里知道现在该做什么'),
+          ]),
+          h('label', { className: 'sd-field sd-field-inline', key: 'fl' }, [
+            h('input', {
+              type: 'checkbox', checked: dp.float === true,
+              onChange: (e) => patch({ float: e.target.checked }),
+            }),
+            h('span', {}, '悬浮在桌面上'),
+            h('span', { className: 'sd-field-hint' }, '和右下角迷你条一样可拖动、可收成小圆点'),
+          ]),
+        ]),
+        h('textarea', {
+          key: 't', className: 'sd-journal-input', rows: 6, value: draft,
+          placeholder: '08:00~09:30 背单词 【英语】\n14:00~16:00 864 论述练习\n16:00~16:20 休息',
+          onChange: (e) => setDraft(e.target.value),
+        }),
+        h('div', { className: 'sd-row', key: 'r' }, [
+          h('button', { className: 'sd-textbtn', disabled: !dirty, onClick: commit }, dirty ? '保存时间段' : '已保存'),
+          h('span', { className: 'sd-field-hint' }, '一行一条：HH:MM~HH:MM 事情，行尾可加【科目】；坏行会被忽略。这是每天的固定模板，不按日期存'),
+        ]),
+      ])
+    }
+
     function Settings() {
       const s = useStore()
       usePoll(60000)
@@ -2544,6 +2833,10 @@ window.__ModuleLoader__.load({
           value: st.milestonesText || '', onCommit: (v) => patch({ milestonesText: v }),
         }),
         h(SubjectsField, { key: 'subjects', value: st.subjects, onCommit: (list) => patch({ subjects: list }) }),
+        h(DayPlanField, {
+          key: 'dayplan', value: s.state.dailyPlan,
+          onCommit: (p) => store.apply('dailyPlan.update', p),
+        }),
         h('div', { className: 'sd-settings-grid', key: 'g' }, [
           h(NumField, { key: 'goal', label: '每日目标（分钟）', value: st.dailyGoalMin || 180, min: 10, max: 1440, onCommit: (v) => patch({ dailyGoalMin: v }) }),
           h(NumField, { key: 'focus', label: '专注时长（分钟）', value: st.focusMin || 25, min: 1, max: 240, onCommit: (v) => patch({ focusMin: v }) }),
@@ -2584,7 +2877,7 @@ window.__ModuleLoader__.load({
       // 挂在四个根上：整页面板、设置节、迷你条、收起态的小圆点 —— 迷你条是 portal 到 body 的，
       // 不在 .sd-page 里面，所以必须单独列出来，否则它取不到阶梯值。
       // SVG 内部（饼图圆心那两行）的 font-size 是 viewBox 用户单位，不是设备像素，刻意不走这套阶梯。
-      '.sd-page,.sd-settings,.sd-mini,.sd-mini-fab,.sd-error{--sd-fs-tick:10px;--sd-fs-micro:11px;--sd-fs-cap:12px;--sd-fs-body:13px;--sd-fs-sub:15px;--sd-fs-mid:20px;--sd-fs-num:26px;--sd-fs-hero:32px;--sd-gap-block:16px;--sd-gap-card:12px;--sd-gap-row:8px;--sd-radius:16px;--sd-radius-sm:11px}',
+      '.sd-page,.sd-settings,.sd-mini,.sd-mini-fab,.sd-plandock,.sd-plandock-fab,.sd-error{--sd-fs-tick:10px;--sd-fs-micro:11px;--sd-fs-cap:12px;--sd-fs-body:13px;--sd-fs-sub:15px;--sd-fs-mid:20px;--sd-fs-num:26px;--sd-fs-hero:32px;--sd-gap-block:16px;--sd-gap-card:12px;--sd-gap-row:8px;--sd-radius:16px;--sd-radius-sm:11px}',
       // 页面骨架
       // 面板外壳：中心列是 overflow:hidden 的 flex 列，滚动条只能由我们自己出
       '.sd-panel{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;width:100%;height:100%;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
@@ -2938,6 +3231,29 @@ window.__ModuleLoader__.load({
       '.sd-mini-late{color:var(--dsw-alias-state-error-primary)}',
       '.sd-mini-fab{position:fixed;right:18px;bottom:18px;z-index:900;pointer-events:auto;-webkit-app-region:no-drag;will-change:left,top;width:34px;height:34px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
       '.sd-mini-fab:hover{color:var(--dsw-alias-brand-primary)}',
+      // 每日计划表悬浮件：坑位规矩照抄迷你条（portal / pointer-events / no-drag / z-index:900），
+      // 默认位在迷你条上方（bottom:64px），落点自己存 plan-pos，互不打架
+      '.sd-plandock{position:fixed;right:18px;bottom:64px;z-index:900;pointer-events:auto;-webkit-app-region:no-drag;will-change:left,top;touch-action:none;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));box-shadow:0 8px 26px rgba(0,0,0,.28);backdrop-filter:blur(10px);font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-primary);max-width:280px}',
+      '.sd-plandock-main{display:flex;align-items:center;gap:7px;padding:7px 9px;cursor:grab;touch-action:none;user-select:none}',
+      '.sd-plandock-main:active{cursor:grabbing}',
+      '.sd-plandock-icon{display:inline-flex;color:var(--dsw-alias-brand-primary);flex:none}',
+      '.sd-plandock-now{font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.sd-plandock-panel{border-top:1px solid var(--dsw-alias-border-l1);padding:9px 10px;display:flex;flex-direction:column;gap:5px;max-height:320px;overflow-y:auto}',
+      '.sd-plandock-fab{position:fixed;right:18px;bottom:64px;z-index:900;pointer-events:auto;-webkit-app-region:no-drag;will-change:left,top;width:30px;height:30px;border-radius:50%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}',
+      '.sd-plandock-fab:hover{color:var(--dsw-alias-brand-primary)}',
+      // 计划表分区卡 + 行（主面板与悬浮件共用同一套行样式）
+      '.sd-plan-card{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--sd-radius);background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
+      '.sd-plan-row{display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:var(--sd-fs-body);color:var(--dsw-alias-label-secondary);border-top:1px solid var(--dsw-alias-border-l1)}',
+      '.sd-plan-row:first-child{border-top:none}',
+      '.sd-plan-time{flex:none;font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--sd-fs-cap);color:var(--dsw-alias-label-tertiary)}',
+      '.sd-plan-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
+      '.sd-plan-subject{flex:none;font-size:var(--sd-fs-micro);padding:1px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}',
+      '.sd-plan-flag{flex:none;font-size:var(--sd-fs-micro)}',
+      '.sd-plan-row.now{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 8%,transparent)}',
+      '.sd-plan-row.now .sd-plan-time,.sd-plan-row.now .sd-plan-flag{color:var(--dsw-alias-state-business-primary)}',
+      '.sd-plan-row.now .sd-plan-label{color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.sd-plan-row.past{opacity:.55}',
+      '.sd-plan-row.past .sd-plan-flag{color:var(--dsw-alias-label-tertiary)}',
       '.sd-error{margin:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:var(--sd-fs-body);line-height:1.6}',
       '.sd-error-stack{margin:10px 0 0;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap;font-size:var(--sd-fs-micro);line-height:1.5;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-radius:6px}',
       // 设置
@@ -3076,6 +3392,13 @@ window.__ModuleLoader__.load({
         () => h(MiniBar, { key: 'mini' }),
         'shell.overlay')
 
+      // 每日计划表悬浮件：与迷你条并列的第二个 shell.overlay。
+      // 自身渲染与否由 dailyPlan.enabled && dailyPlan.float 决定（关了返回 null，槽位仍占着）
+      register('shell.overlay',
+        { name: 'shell.overlay', id: 'study-desk-plan', order: 81, label: '每日计划表' },
+        () => h(PlanDock, { key: 'plandock' }),
+        'shell.overlay.plandock')
+
       // 设置页
       register('settings.section',
         { name: 'settings.section', id: 'study-desk', order: 27, label: '学习工作台' },
@@ -3095,7 +3418,7 @@ window.__ModuleLoader__.load({
         () => h(BbdcPanel, { key: 'bbdc' }),
         'main.bbdc')
 
-      reportDiag({ kind: 'slots-registered', where: 'client', message: '六个槽位注册调用已完成' })
+      reportDiag({ kind: 'slots-registered', where: 'client', message: '七个槽位注册调用已完成' })
     }
 
     exports.apply = apply

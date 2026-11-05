@@ -294,6 +294,30 @@ check('手动起钟不需要挂卡', () => {
 await post({ op: 'timer.reset' })
 await run('remove', { title: '门禁冒烟卡' })
 
+// ---- 每日计划表：数据校验在 desk.js 一处，快照带宿主算好的 dayPlan
+const dp1 = await post({ op: 'dailyPlan.update', patch: {
+  enabled: true,
+  items: [
+    '这行不是对象，会被丢掉',
+    { start: '08:00', end: '09:30', label: '背单词', subject: '英语' },
+    { start: '09:30', end: '08:00', label: '起终写反的', subject: '' },
+    { start: '25:00', end: '26:00', label: '非法时刻的' },
+  ],
+} })
+check('POST dailyPlan.update 200', () => assert.equal(dp1.code, 200))
+check('计划表坏行被丢、好行保留', () => {
+  const dp = JSON.parse(dp1.body).state.dailyPlan
+  assert.equal(dp.enabled, true)
+  assert.equal(dp.items.length, 1)
+  assert.equal(dp.items[0].label, '背单词')
+})
+check('快照带 dayPlan（current/next 形状）', () => {
+  const j = JSON.parse(dp1.body)
+  assert.ok(Array.isArray(j.dayPlan.items) && j.dayPlan.items.length === 1)
+  assert.ok(j.dayPlan.current === null || j.dayPlan.current.label === '背单词')
+})
+await post({ op: 'dailyPlan.update', patch: { enabled: false } })
+
 // ---- 复习 / 复盘 / Markdown
 const p7 = await post({ op: 'review.grade', title: 'POST 加的卡', grade: 'easy' })
 check('POST review.grade 200', () => assert.equal(p7.code, 200))
@@ -413,6 +437,7 @@ globalThis.fetch = async () => ({
       journal: {},
       timer: null,
       settings: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, roundsBeforeLong: 4, dailyGoalMin: 180, streakMin: 10, injectPrompt: true, subjects: [], heatmapWeeks: 26, reviewQueueSize: 10 },
+      dailyPlan: { enabled: true, float: true, items: [{ id: 'a', start: '08:00', end: '09:30', label: '背单词', subject: '英语' }] },
       createdAt: 0,
       updatedAt: 0,
     },
@@ -421,6 +446,7 @@ globalThis.fetch = async () => ({
     streak: 0,
     focusRoundsToday: 0,
     review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
+    dayPlan: { current: null, next: null, items: [{ id: 'a', start: '08:00', end: '09:30', label: '背单词', subject: '英语' }] },
     due: [],
     tags: [],
     weekly: { weeks: [], goalWeekly: 1260 },
@@ -471,12 +497,12 @@ const clientCtx = {
 
 check('client apply() 不抛', () => clientMod.apply(clientCtx))
 // 两个面板：学习工作台 + 单词打卡，各自一对 sidebar.panellist / main
-check('注册了 6 个槽位（两个面板 + 迷你条 + 设置页）', () => {
+check('注册了 7 个槽位（两个面板 + 两个悬浮件 + 设置页）', () => {
   const names = clientRegistered.slots.map((s) => s.slotName).sort()
-  assert.deepEqual(names, ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
+  assert.deepEqual(names, ['main', 'main', 'settings.section', 'shell.overlay', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
 check('inject 的槽位名与注册的一致', () => {
-  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
+  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'main', 'settings.section', 'shell.overlay', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
 check('两个侧栏面板的 id 与两个 main 的 key 逐一对齐', () => {
   const ids = clientRegistered.slots.filter((x) => x.slotName === 'sidebar.panellist').map((x) => x.id).sort()
@@ -514,9 +540,13 @@ check('每个槽位的 factory 都用 Boundary 包了一层', () => {
     assert.equal(node.__el.name, 'Boundary', `${s.slotName} 没被 Boundary 包住，实际是 ${node.__el && node.__el.name}`)
   }
 })
-check('Boundary 的 where 标签能区分两个面板', () => {
+check('Boundary 的 where 标签能区分两个面板与两个悬浮件', () => {
   const wheres = clientRegistered.slots.map((s) => s.factory({ size: 18 }).props.where).sort()
-  assert.deepEqual(wheres, ['main', 'main.bbdc', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist.bbdc'])
+  assert.deepEqual(wheres, ['main', 'main.bbdc', 'settings.section', 'shell.overlay', 'shell.overlay.plandock', 'sidebar.panellist', 'sidebar.panellist.bbdc'])
+})
+check('两个 shell.overlay 的 id 不冲突（宿主按 id 挂槽位）', () => {
+  const ids = clientRegistered.slots.filter((x) => x.slotName === 'shell.overlay').map((x) => x.id).sort()
+  assert.deepEqual(ids, ['study-desk-mini', 'study-desk-plan'])
 })
 check('注入了一份 style', () => assert.ok(clientRegistered.effects.length > 0))
 
