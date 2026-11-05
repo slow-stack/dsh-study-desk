@@ -252,9 +252,17 @@ node install.mjs --profile <profile 目录> --uninstall
 `package.json` 的 `version` 是唯一真相，tag 用 `v<版本>`，CHANGELOG 顶部加一段。三处对齐后：
 
 ```bash
-git tag -a v0.6.1 -m 'v0.6.1' && git push origin master v0.6.1
-gh release create v0.6.1 --title '…' --notes-file <文件>
+git checkout -b feat/v0.8.0 && git push -u origin feat/v0.8.0
+gh pr create --base master --head feat/v0.8.0 --title 'v0.8.0' --body '…'
+# CI 过 → gh pr merge <PR号> --merge --delete-branch
+gh workflow run release.yml --ref v0.8.0
+gh release create v0.8.0 --title '…' --notes-file <文件>
 ```
+
+**master 现在禁直推**（repository rule，`push declined due to repository rule violations`）——
+发版提交也要走 PR（v0.5.0 / v0.6.0 / v0.6.1 的 `feat/v0.x.y` 就是这么干的；v0.8.0 那次撞过一回墙：
+tag 能推上去、master 被拒，tag 指向的提交随后经 PR 进了 master 历史才算落定）。tag 可以在 PR 合入前推，
+`release.yml` 检出的是 tag 本身；但 PR 合完之前别触发发布。
 
 ### 走哪条路
 
