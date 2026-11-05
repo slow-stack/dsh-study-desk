@@ -268,7 +268,9 @@ check('专注走完 → 提醒以 user 消息送进起钟会话', () => {
   assert.equal(msg.role, 'user')
   assert.match(msg.content[0].text, /番茄钟·自动提醒/)
   assert.match(msg.content[0].text, /25 分钟/)
-  assert.equal(msg.source.kind, 'plugin')
+  // 必须是生产者自己命名的 kind：裸 'plugin' 是宿主会话格式 v4 已退役的写法，
+  // 落盘时会被整条拒绝（format v4 message requires a producer-owned source kind）
+  assert.equal(msg.source.kind, 'plugin:dsh-study-desk')
 })
 check('自动摆的休息继承会话标记（链条不断）', () => {
   const t = JSON.parse(nudgeRes.body).state.timer

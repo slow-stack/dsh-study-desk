@@ -2,6 +2,22 @@
 
 格式随版本号走；`package.json` 的 version 是唯一真相，tag 用 `v<版本>`。
 
+## v0.8.1
+
+番茄钟走完的自动提醒会把整个会话打成跑不起来 —— 修掉那条写入。
+
+- **会话消息的 source kind 带上生产者前缀**：番茄钟走完发回起钟会话的那条提醒，`source` 以前写成
+  `{ kind: 'plugin', plugin: 'dsh-study-desk', … }`。宿主会话格式 v4 把这种「kind 一律 `plugin`、
+  只靠 `plugin` 字段认来源」的写法判为退役语法，落盘时整条拒绝，报
+  `format v4 message requires a producer-owned source kind` —— 表现就是会话在番茄钟停止的那一刻
+  忽然**任何回复都发不出去**，历史还在、但每一轮都撞同一堵墙。现在 kind 写成
+  `plugin:dsh-study-desk`（宿主只要求「非空且不是裸 `plugin`」，前缀正是来源标记，
+  `clearai` / `dsh-mneme` 等插件在现有会话里早已这么写），由 `MESSAGE_SOURCE_KIND`
+  与 `timerEndSource()` 统一产出，不再手写。
+- **回归测试 + 静态扫**：新增 `test/message-source.test.js`（4 条）。除了断言工厂产出的 source
+  能过宿主同款准入，还静态扫源码禁止裸 `kind: 'plugin'` 回潮；`apply-probe.mjs` 里那条端到端断言
+  同步改成新 kind。单测 73 → 78。
+
 ## v0.8.0
 
 AI 把督促链路接上了：AI 起番茄钟必须先落卡、走完自动提醒开钟的那个会话；新增每日计划表，模型从系统提示里就知道「现在该做什么」。看板补上过卡模式、卡片截止日期与一批顺手的升级。
