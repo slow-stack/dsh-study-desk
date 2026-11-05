@@ -43,6 +43,8 @@ test('投入类图表走绿色阶、到期预报走暖色，不再用会掉成�
   }
   assert.match(rule('.sd-week.current .sd-week-fill'), /--dsw-static-green-500/, '周报当前周该跟热力图同族')
   assert.match(rule('.sd-bar-study .sd-bar-fill'), /--dsw-static-green-500/, '今日进度条该跟热力图同族')
+  assert.match(rule('.sd-subj-bar .sd-bar-fill'), /--dsw-static-green-500/, '近30天/周报的科目投入条该跟热力图同族（brand 在暗色主题解析成近白）')
+  assert.match(rule('.sd-recent-bar i'), /--dsw-static-green-500/, '单词打卡近 7 天的复习条也是投入语义，走绿族')
   assert.match(rule('.sd-fbar-fill'), /--dsw-static-amber-500/, '到期预报柱体该走暖色')
   assert.match(rule('.sd-fbar.today .sd-fbar-fill'), /--dsw-static-red-500/, '今天那一根该转红')
   // 计时器那条她没让改，别顺手改齐

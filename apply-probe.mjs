@@ -4,7 +4,7 @@
  * 用法：node apply-probe.mjs   （cwd = 本目录，含 index.js/desk.js/timer.js/client.js）
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -223,6 +223,101 @@ check('未知 op 带 error 文案', () => assert.ok(String(JSON.parse(p5.body).e
 const p6 = await post({ op: 'task.add' })
 check('缺 title 返回 400', () => assert.equal(p6.code, 400))
 
+// ---- AI 起钟门禁 + 番茄钟走完的会话提醒（督促链路端到端）----
+// stub 一个 agents 服务：宿主提醒走 ctx.get('agents').get(sessionId).followup(消息)
+const agentStub = { id: 'sess-A', followups: [], followup(msg) { this.followups.push(msg) } }
+registered.services.agents = { get(id) { return id === 'sess-A' ? agentStub : undefined } }
+
+const blockedNoTask = await run('focus', { minutes: 25 })
+check('AI 起钟不挂卡被拒，且报错里教了完整流程', () => {
+  assert.equal(blockedNoTask.ok, false)
+  assert.match(blockedNoTask.message, /挂卡/)
+  assert.match(blockedNoTask.message, /action=add/)
+  assert.match(blockedNoTask.message, /status=doing/)
+})
+
+const gateCard = await run('add', { title: '门禁冒烟卡', subject: '英语' })
+check('门禁卡建好', () => assert.equal(gateCard.ok, true))
+const blockedTodo = await run('focus', { minutes: 25, task: '门禁冒烟卡' })
+check('AI 起钟挂待办卡被拒', () => {
+  assert.equal(blockedTodo.ok, false)
+  assert.match(blockedTodo.message, /进行中/)
+})
+
+await run('move', { title: '门禁冒烟卡', status: 'doing' })
+const aiFocus = await tool.execute({ action: 'focus', minutes: 25, task: '门禁冒烟卡' }, { agent: { id: 'sess-A' } })
+check('挂「进行中」的卡可以起钟', () => assert.equal(aiFocus.ok, true))
+check('起钟回执预告了自动提醒', () => assert.match(aiFocus.message, /自动往本会话发一条提醒/))
+check('计时器记下了起钟会话', () => {
+  const t = JSON.parse(readFileSync(join(PROBE_HOME, 'study-desk', 'desk.json'), 'utf8')).timer
+  assert.equal(t.by, 'ai')
+  assert.equal(t.sessionId, 'sess-A')
+})
+
+// 时间快进：把 endsAt 改到过去再 GET，宿主结账 → 提醒送进 stub 会话
+const deskPath = join(PROBE_HOME, 'study-desk', 'desk.json')
+const rawDesk = JSON.parse(readFileSync(deskPath, 'utf8'))
+rawDesk.timer.endsAt = Date.now() - 1000
+rawDesk.timer.startedAt = rawDesk.timer.endsAt - 25 * 60000
+writeFileSync(deskPath, JSON.stringify(rawDesk))
+const nudgeRes = fakeRes()
+await route.handler({ method: 'GET', url: '/api/dsh-study-desk?op=state', headers: {}, on() {} }, nudgeRes)
+check('专注走完 → 提醒以 user 消息送进起钟会话', () => {
+  assert.equal(agentStub.followups.length, 1)
+  const msg = agentStub.followups[0]
+  assert.equal(msg.role, 'user')
+  assert.match(msg.content[0].text, /番茄钟·自动提醒/)
+  assert.match(msg.content[0].text, /25 分钟/)
+  assert.equal(msg.source.kind, 'plugin')
+})
+check('自动摆的休息继承会话标记（链条不断）', () => {
+  const t = JSON.parse(nudgeRes.body).state.timer
+  assert.equal(t.kind, 'break')
+  assert.equal(t.sessionId, 'sess-A')
+})
+
+// 关掉开关：休息走完不再提醒
+await post({ op: 'settings.update', patch: { notifySessionOnTimerEnd: false } })
+const rawDesk2 = JSON.parse(readFileSync(deskPath, 'utf8'))
+rawDesk2.timer.endsAt = Date.now() - 1000
+writeFileSync(deskPath, JSON.stringify(rawDesk2))
+await route.handler({ method: 'GET', url: '/api/dsh-study-desk?op=state', headers: {}, on() {} }, fakeRes())
+check('开关关闭后不再提醒', () => assert.equal(agentStub.followups.length, 1))
+
+// POST timer.start（客户端手动路径）不受门禁限制，也不带会话标记
+const pUser = await post({ op: 'timer.start', minutes: 5, name: '手动起钟' })
+check('手动起钟不需要挂卡', () => {
+  const body = JSON.parse(pUser.body)
+  assert.equal(body.ok, true)
+  assert.equal(body.state.timer.by, null)
+})
+await post({ op: 'timer.reset' })
+await run('remove', { title: '门禁冒烟卡' })
+
+// ---- 每日计划表：数据校验在 desk.js 一处，快照带宿主算好的 dayPlan
+const dp1 = await post({ op: 'dailyPlan.update', patch: {
+  enabled: true,
+  items: [
+    '这行不是对象，会被丢掉',
+    { start: '08:00', end: '09:30', label: '背单词', subject: '英语' },
+    { start: '09:30', end: '08:00', label: '起终写反的', subject: '' },
+    { start: '25:00', end: '26:00', label: '非法时刻的' },
+  ],
+} })
+check('POST dailyPlan.update 200', () => assert.equal(dp1.code, 200))
+check('计划表坏行被丢、好行保留', () => {
+  const dp = JSON.parse(dp1.body).state.dailyPlan
+  assert.equal(dp.enabled, true)
+  assert.equal(dp.items.length, 1)
+  assert.equal(dp.items[0].label, '背单词')
+})
+check('快照带 dayPlan（current/next 形状）', () => {
+  const j = JSON.parse(dp1.body)
+  assert.ok(Array.isArray(j.dayPlan.items) && j.dayPlan.items.length === 1)
+  assert.ok(j.dayPlan.current === null || j.dayPlan.current.label === '背单词')
+})
+await post({ op: 'dailyPlan.update', patch: { enabled: false } })
+
 // ---- 复习 / 复盘 / Markdown
 const p7 = await post({ op: 'review.grade', title: 'POST 加的卡', grade: 'easy' })
 check('POST review.grade 200', () => assert.equal(p7.code, 200))
@@ -342,6 +437,7 @@ globalThis.fetch = async () => ({
       journal: {},
       timer: null,
       settings: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, roundsBeforeLong: 4, dailyGoalMin: 180, streakMin: 10, injectPrompt: true, subjects: [], heatmapWeeks: 26, reviewQueueSize: 10 },
+      dailyPlan: { enabled: true, float: true, items: [{ id: 'a', start: '08:00', end: '09:30', label: '背单词', subject: '英语' }] },
       createdAt: 0,
       updatedAt: 0,
     },
@@ -350,6 +446,7 @@ globalThis.fetch = async () => ({
     streak: 0,
     focusRoundsToday: 0,
     review: { scheduled: 0, due: 0, dueToday: 0, overdue: 0, doneToday: 0, weekDone: 0 },
+    dayPlan: { current: null, next: null, items: [{ id: 'a', start: '08:00', end: '09:30', label: '背单词', subject: '英语' }] },
     due: [],
     tags: [],
     weekly: { weeks: [], goalWeekly: 1260 },
@@ -400,12 +497,12 @@ const clientCtx = {
 
 check('client apply() 不抛', () => clientMod.apply(clientCtx))
 // 两个面板：学习工作台 + 单词打卡，各自一对 sidebar.panellist / main
-check('注册了 6 个槽位（两个面板 + 迷你条 + 设置页）', () => {
+check('注册了 7 个槽位（两个面板 + 两个悬浮件 + 设置页）', () => {
   const names = clientRegistered.slots.map((s) => s.slotName).sort()
-  assert.deepEqual(names, ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
+  assert.deepEqual(names, ['main', 'main', 'settings.section', 'shell.overlay', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
 check('inject 的槽位名与注册的一致', () => {
-  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'main', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
+  assert.deepEqual(clientRegistered.injects.slice().sort(), ['main', 'main', 'settings.section', 'shell.overlay', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist'])
 })
 check('两个侧栏面板的 id 与两个 main 的 key 逐一对齐', () => {
   const ids = clientRegistered.slots.filter((x) => x.slotName === 'sidebar.panellist').map((x) => x.id).sort()
@@ -443,9 +540,13 @@ check('每个槽位的 factory 都用 Boundary 包了一层', () => {
     assert.equal(node.__el.name, 'Boundary', `${s.slotName} 没被 Boundary 包住，实际是 ${node.__el && node.__el.name}`)
   }
 })
-check('Boundary 的 where 标签能区分两个面板', () => {
+check('Boundary 的 where 标签能区分两个面板与两个悬浮件', () => {
   const wheres = clientRegistered.slots.map((s) => s.factory({ size: 18 }).props.where).sort()
-  assert.deepEqual(wheres, ['main', 'main.bbdc', 'settings.section', 'shell.overlay', 'sidebar.panellist', 'sidebar.panellist.bbdc'])
+  assert.deepEqual(wheres, ['main', 'main.bbdc', 'settings.section', 'shell.overlay', 'shell.overlay.plandock', 'sidebar.panellist', 'sidebar.panellist.bbdc'])
+})
+check('两个 shell.overlay 的 id 不冲突（宿主按 id 挂槽位）', () => {
+  const ids = clientRegistered.slots.filter((x) => x.slotName === 'shell.overlay').map((x) => x.id).sort()
+  assert.deepEqual(ids, ['study-desk-mini', 'study-desk-plan'])
 })
 check('注入了一份 style', () => assert.ok(clientRegistered.effects.length > 0))
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   addTask,
+  dailyPlanNow,
   dayKey,
   daysUntil,
   dueQueue,
@@ -16,6 +17,7 @@ import {
   normalize,
   normalizeTags,
   parseMilestones,
+  planMinutes,
   reorderTask,
   reviewForecast,
   reviewPlan,
@@ -27,7 +29,9 @@ import {
   subjectBreakdown,
   summary,
   todayMinutes,
+  updateDailyPlan,
   updateSettings,
+  updateTask,
   weeklyReport,
 } from '../desk.js'
 import { completeTimer, makeTimer, pauseTimer, reconcileTimer, remainingMs, resetTimer, startTimer } from '../timer.js'
@@ -562,4 +566,158 @@ test('「结束这一段」按真实时长记账，「放弃」不记账', () =>
   startTimer(dropped, { minutes: 25, kind: 'focus', title: 'x' }, T0)
   resetTimer(dropped)
   assert.equal(dropped.sessions.length, 0, '放弃不该记账')
+})
+
+test('截止日期：addTask/updateTask 只认 YYYY-MM-DD，别的形状一律清空', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '交开题报告', dueDate: '2026-12-01' }, T0)
+  assert.equal(a.dueDate, '2026-12-01')
+  updateTask(s, a.id, { dueDate: '2026-12-15' }, T0)
+  assert.equal(a.dueDate, '2026-12-15', '合法改期能改上')
+  updateTask(s, a.id, { dueDate: '下周五' }, T0)
+  assert.equal(a.dueDate, null, '非法日期清空，而不是保留旧值')
+  const b = addTask(s, { title: '没有截止', dueDate: '明天' }, T0)
+  assert.equal(b.dueDate, null)
+  updateTask(s, b.id, { dueDate: '' }, T0)
+  assert.equal(b.dueDate, null, '空串就是清除')
+})
+
+test('normalize 认得 dueDate：合法保留、非法丢掉，旧文件没这个字段也不炸', () => {
+  const s = normalize({ tasks: [
+    { id: 'a', title: '有截止', dueDate: '2026-11-20' },
+    { id: 'b', title: '坏截止', dueDate: '12月20日' },
+    { id: 'c', title: '没字段' },
+  ] })
+  assert.equal(s.tasks[0].dueDate, '2026-11-20')
+  assert.equal(s.tasks[1].dueDate, null)
+  assert.equal(s.tasks[2].dueDate, null)
+})
+
+test('summary 的 doing/todo 带上 dueDate（系统提示要拿它提醒她）', () => {
+  const s = normalize(null)
+  const a = addTask(s, { title: '写综述', dueDate: '2026-10-20' }, T0)
+  assert.equal(summary(s, T0).todo[0].dueDate, '2026-10-20')
+  updateTask(s, a.id, { status: 'doing' }, T0)
+  assert.equal(summary(s, T0).doing[0].dueDate, '2026-10-20', '挪到进行中之后仍然带着截止')
+})
+
+// ---------------------------------------------------------------------------
+// AI 起钟的会话标记与会话提醒素材（番茄钟督促链路）
+// ---------------------------------------------------------------------------
+
+test('AI 起的钟带会话标记，自动摆的休息继承标记，到点收走提醒素材', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', by: 'ai', sessionId: 'sess-A' }, T0)
+  assert.equal(s.timer.by, 'ai')
+  assert.equal(s.timer.sessionId, 'sess-A')
+
+  const ended = []
+  assert.equal(reconcileTimer(s, T0 + 25 * MIN, ended), true)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].kind, 'focus')
+  assert.equal(ended[0].sessionId, 'sess-A')
+  assert.equal(ended[0].endedAt, T0 + 25 * MIN)
+
+  // 休息继承链条：休息走完时提醒还发给同一个会话
+  assert.equal(s.timer.kind, 'break')
+  assert.equal(s.timer.sessionId, 'sess-A')
+  ended.length = 0
+  assert.equal(reconcileTimer(s, T0 + 30 * MIN, ended), true)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].kind, 'break')
+  assert.equal(ended[0].sessionId, 'sess-A')
+})
+
+test('手动起的钟没有会话标记，不产生会话提醒素材', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', minutes: 25 }, T0)
+  assert.equal(s.timer.by, null)
+  assert.equal(s.timer.sessionId, null)
+  const ended = []
+  reconcileTimer(s, T0 + 25 * MIN, ended)
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].sessionId, null)
+})
+
+test('手动提前结束后，AI 链条的休息仍然继承会话标记', () => {
+  const s = normalize(null)
+  updateSettings(s, { focusMin: 25, shortBreakMin: 5 })
+  startTimer(s, { kind: 'focus', by: 'ai', sessionId: 'sess-B' }, T0)
+  pauseTimer(s, T0 + 10 * MIN)
+  completeTimer(s, T0 + 20 * MIN)
+  assert.equal(s.timer.kind, 'break')
+  assert.equal(s.timer.sessionId, 'sess-B')
+})
+
+test('updateSettings 能开关 notifySessionOnTimerEnd，不传不动它', () => {
+  const s = normalize(null)
+  assert.equal(s.settings.notifySessionOnTimerEnd, undefined, '默认没写进文件（undefined = 开）')
+  updateSettings(s, { notifySessionOnTimerEnd: false })
+  assert.equal(s.settings.notifySessionOnTimerEnd, false)
+  updateSettings(s, { notifySessionOnTimerEnd: true })
+  assert.equal(s.settings.notifySessionOnTimerEnd, true)
+  updateSettings(s, { focusMin: 30 })
+  assert.equal(s.settings.notifySessionOnTimerEnd, true, '别的设置项不该动它')
+})
+
+// ---------------------------------------------------------------------------
+// 每日计划表：时间段模板 + 「现在该做什么」单点计算
+// ---------------------------------------------------------------------------
+
+test('normalizeDailyPlan：坏行丢掉、好行保留、按开始时刻排序', () => {
+  const s = normalize({ dailyPlan: { enabled: true, items: [
+    { start: '14:00', end: '16:00', label: '864 论述练习' },
+    '这不是对象',
+    { start: '08:00', end: '09:30', label: '背单词', subject: '英语' },
+    { start: '09:30', end: '08:00', label: '起终写反' },
+    { start: '25:00', end: '26:00', label: '非法时刻' },
+    { start: '08:00', end: '09:00', label: '' },            // 没名字的丢
+    { start: '12:00', end: '13:00', label: '午休', id: 'x' },
+    { start: '07:00', end: '07:40', label: '早读', id: 'x' }, // id 撞了会重发一个
+  ] } })
+  const items = s.dailyPlan.items
+  assert.equal(items.length, 4)
+  assert.deepEqual(items.map((x) => x.label), ['早读', '背单词', '午休', '864 论述练习'], '按开始时刻排好了')
+  assert.notEqual(items[1].id, 'x', '撞 id 的那条要重新发 id')
+  assert.equal(s.dailyPlan.enabled, true)
+  assert.equal(s.dailyPlan.float, false)
+})
+
+test('dailyPlanNow：区间命中与下一场', () => {
+  const s = normalize({ dailyPlan: { enabled: true, items: [
+    { start: '08:00', end: '09:30', label: '背单词' },
+    { start: '14:00', end: '16:00', label: '864 论述练习' },
+  ] } })
+  // 用固定一天里的时刻构造 now（本地时区）
+  const at = (h, m) => new Date(2026, 10, 5, h, m).getTime()
+  assert.equal(dailyPlanNow(s, at(8, 15)).current.label, '背单词')
+  assert.equal(dailyPlanNow(s, at(8, 15)).next.label, '864 论述练习')
+  assert.equal(dailyPlanNow(s, at(9, 30)).current, null, 'end 时刻已切出区间')
+  assert.equal(dailyPlanNow(s, at(9, 30)).next.label, '864 论述练习')
+  assert.equal(dailyPlanNow(s, at(23, 59)).current, null)
+  assert.equal(dailyPlanNow(s, at(23, 59)).next, null, '当天没有下一场了')
+  assert.equal(dailyPlanNow(s, at(15, 0)).current.minutes, undefined, 'current 就是条目本身')
+})
+
+test('dailyPlanNow：没启用就只发条目不发判定', () => {
+  const s = normalize({ dailyPlan: { items: [{ start: '08:00', end: '09:00', label: '背单词' }] } })
+  const now = dailyPlanNow(s)
+  assert.equal(now.current, null)
+  assert.equal(now.items.length, 1, '条目照发，客户端设置页编辑器还要用它')
+  assert.equal(dailyPlanNow(normalize(null)).items.length, 0)
+})
+
+test('updateDailyPlan：单独开关 enabled/float，互不牵连', () => {
+  const s = normalize({ dailyPlan: { enabled: true, float: true, items: [
+    { start: '08:00', end: '09:00', label: '背单词' },
+  ] } })
+  updateDailyPlan(s, { float: false })
+  assert.equal(s.dailyPlan.enabled, true)
+  assert.equal(s.dailyPlan.float, false)
+  assert.equal(s.dailyPlan.items.length, 1, '开关不动条目')
+  updateDailyPlan(s, { enabled: false, items: [] })
+  assert.equal(s.dailyPlan.enabled, false)
+  assert.equal(s.dailyPlan.items.length, 0)
 })

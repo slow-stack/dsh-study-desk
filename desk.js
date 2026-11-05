@@ -184,6 +184,7 @@ function freshState() {
     journal: {},
     timer: null,
     settings: { ...DEFAULT_SETTINGS, subjects: DEFAULT_SETTINGS.subjects.map((s) => ({ ...s })) },
+    dailyPlan: { enabled: false, float: false, items: [] },
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
@@ -241,6 +242,7 @@ export function normalize(raw) {
     reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
     journal: raw.journal && typeof raw.journal === 'object' ? raw.journal : {},
     settings: { ...base.settings, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+    dailyPlan: normalizeDailyPlan(raw.dailyPlan),
   }
   if (!Array.isArray(state.settings.subjects) || state.settings.subjects.length === 0) {
     state.settings.subjects = base.settings.subjects.map((s) => ({ ...s }))
@@ -254,6 +256,7 @@ export function normalize(raw) {
       subject: String(t.subject || ''),
       note: String(t.note || ''),
       estimateMin: Math.max(0, Math.floor(Number(t.estimateMin) || 0)),
+      dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(t.dueDate || '')) ? String(t.dueDate) : null,
       createdAt: Number(t.createdAt) || Date.now(),
       updatedAt: Number(t.updatedAt) || Number(t.createdAt) || Date.now(),
       doneAt: Number(t.doneAt) || null,
@@ -391,6 +394,7 @@ export function addTask(state, input, now = Date.now()) {
     subject: String((input && input.subject) || ''),
     note: String((input && input.note) || ''),
     estimateMin: Math.max(0, Math.floor(Number(input && input.estimateMin) || 0)),
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String((input && input.dueDate) || '')) ? String(input.dueDate) : null,
     createdAt: now,
     updatedAt: now,
     doneAt: status === 'done' ? now : null,
@@ -411,6 +415,11 @@ export function updateTask(state, ref, patch, now = Date.now()) {
   if (typeof p.note === 'string') task.note = p.note
   if (typeof p.subject === 'string') task.subject = p.subject
   if (p.estimateMin !== undefined) task.estimateMin = Math.max(0, Math.floor(Number(p.estimateMin) || 0))
+  if (p.dueDate !== undefined) {
+    // 卡片自己的硬截止（区别于复习排期 review.due）：只认 YYYY-MM-DD，别的形状一律清空
+    const v = String(p.dueDate || '').trim()
+    task.dueDate = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
+  }
   if (p.pinned !== undefined) task.pinned = !!p.pinned
   if (p.tags !== undefined) task.tags = normalizeTags(p.tags)
   if (p.review === true && !task.review.due) task.review = { ...emptyReview(), due: dayKey(now) }
@@ -491,6 +500,7 @@ export function updateSettings(state, patch) {
     }
   }
   if (p.injectPrompt !== undefined) next.injectPrompt = !!p.injectPrompt
+  if (p.notifySessionOnTimerEnd !== undefined) next.notifySessionOnTimerEnd = !!p.notifySessionOnTimerEnd
   for (const k of ['goalLabel', 'goalNote']) {
     if (p[k] !== undefined) next[k] = String(p[k]).trim().slice(0, 40)
   }
@@ -514,6 +524,82 @@ export function updateSettings(state, patch) {
   }
   state.settings = next
   return next
+}
+
+// ---------------------------------------------------------------------------
+// 每日计划表：哪个时间段做什么事。每天的固定模板（不按日期存，改模板=改每一天）。
+// 数据在 state.dailyPlan；「现在该做什么」由 dailyPlanNow 单点算——
+// 注入 system prompt 与快照都从它取，客户端只画不算。
+// ---------------------------------------------------------------------------
+
+/** 'HH:MM' → 当天分钟数。非法输入返回 NaN。 */
+export function planMinutes(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim())
+  if (!m) return NaN
+  const h = Number(m[1])
+  const min = Number(m[2])
+  if (h > 23 || min > 59) return NaN
+  return h * 60 + min
+}
+
+const MAX_PLAN_ITEMS = 48
+
+function normalizeDailyPlan(raw) {
+  const base = { enabled: false, float: false, items: [] }
+  if (!raw || typeof raw !== 'object') return base
+  const seen = new Set()
+  const items = []
+  for (const it of Array.isArray(raw.items) ? raw.items : []) {
+    if (!it || typeof it !== 'object') continue
+    const start = String(it.start || '').trim()
+    const end = String(it.end || '').trim()
+    const label = String(it.label || '').trim().slice(0, 60)
+    if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) continue
+    if (!label) continue
+    const s = planMinutes(start)
+    const e = planMinutes(end)
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s >= e) continue // 跨午夜不支持；写反的整条丢掉
+    let id = String(it.id || '').trim()
+    if (!id || seen.has(id)) id = randomUUID()
+    seen.add(id)
+    items.push({ id, start, end, label, subject: String(it.subject || '').trim().slice(0, 30) })
+    if (items.length >= MAX_PLAN_ITEMS) break
+  }
+  items.sort((a, b) => planMinutes(a.start) - planMinutes(b.start) || planMinutes(a.end) - planMinutes(b.end))
+  return {
+    enabled: raw.enabled === true,
+    float: raw.float === true,
+    items,
+  }
+}
+
+export function updateDailyPlan(state, patch) {
+  const p = patch || {}
+  const cur = normalizeDailyPlan(state.dailyPlan)
+  state.dailyPlan = normalizeDailyPlan({
+    enabled: p.enabled !== undefined ? p.enabled : cur.enabled,
+    float: p.float !== undefined ? p.float : cur.float,
+    items: p.items !== undefined ? p.items : cur.items,
+  })
+  return state.dailyPlan
+}
+
+/** 现在在哪个计划区间里、下一场是什么。enabled=false 或没条目时 items 照发，current/next 为 null。 */
+export function dailyPlanNow(state, now = Date.now()) {
+  const plan = state.dailyPlan || { enabled: false, items: [] }
+  const items = Array.isArray(plan.items) ? plan.items : []
+  const empty = { current: null, next: null, items }
+  if (plan.enabled !== true || !items.length) return empty
+  const d = new Date(now)
+  const mins = d.getHours() * 60 + d.getMinutes()
+  let current = null
+  let next = null
+  for (const it of items) {
+    const s = planMinutes(it.start)
+    if (mins >= s && mins < planMinutes(it.end)) current = it
+    else if (s > mins && !next) next = it
+  }
+  return { current, next, items }
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,12 +1145,12 @@ export function summary(state, now = Date.now()) {
       today: state.journal[todayKey] || '',
       yesterday: state.journal[dayKey(addDays(now, -1))] || '',
     },
-    doing: cols.doing.map((t) => ({ id: t.id, title: t.title, subject: t.subject, minutes: byTask.get(t.id) || 0 })),
+    doing: cols.doing.map((t) => ({ id: t.id, title: t.title, subject: t.subject, dueDate: t.dueDate || null, minutes: byTask.get(t.id) || 0 })),
     todo: cols.todo
       .slice()
       .sort((a, b) => (b.pinned - a.pinned) || (a.order - b.order))
       .slice(0, 12)
-      .map((t) => ({ id: t.id, title: t.title, subject: t.subject, pinned: t.pinned, estimateMin: t.estimateMin })),
+      .map((t) => ({ id: t.id, title: t.title, subject: t.subject, pinned: t.pinned, dueDate: t.dueDate || null, estimateMin: t.estimateMin })),
     doneToday: doneToday.map((t) => ({ id: t.id, title: t.title })).slice(0, 12),
     week: heatmap(state, 1, now).weeks[0].days.filter(Boolean).map((d) => ({ date: d.key, minutes: d.minutes })),
   }

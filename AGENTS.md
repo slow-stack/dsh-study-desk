@@ -12,6 +12,9 @@
 - **待办墙**：Notion 式三列（待办 / 进行中 / 已完成），卡片带科目、预计时长、累计投入，可拖拽换列；
 - **学习热力图**：点亮条件是**当天实际复习了多少分钟**，不是「当天有没有消耗 token / 有没有开过会话」；
 - **番茄钟**：专注 / 短休 / 长休自动轮换，换面板、刷新、关掉浏览器再打开都按绝对截止时间恢复；
+  AI 起钟走门禁（必须挂「进行中」的卡），走完自动提醒开钟的那个会话（可开关）；
+- **每日计划表**：`HH:MM~HH:MM 事情` 的每日固定模板，开了之后主面板显示、模型从系统提示里
+  知道「现在该做什么」，还可以像迷你条一样悬浮在桌面上（功能与悬浮各自独立开关）；
 - **常驻迷你条**：右下角小胶囊，在对话页也能看见剩余时间。
 
 它**不属于 DSH 官方**，也不依赖任何第三方包（运行时依赖为零）。宿主半边只额外用到 DSH 自己的
@@ -25,14 +28,14 @@
 | `markdown.js` | Markdown 导出 / 读回（纯函数）：`toMarkdown` 生成 Obsidian 友好的 `desk.md`，`fromMarkdown` + `mergeMarkdown` 按 id 合并读回。机器字段放在行尾 `<!-- desk:… -->` 注释里。 |
 | `bbdc.js` | **不背单词打卡桥**（纯数据层，零依赖）：从腾讯 Androws 虚拟磁盘里的 App 数据读打卡/时长/词书，再用 App WebView 缓存里挖到的 `sid` 打 `learnywhere.cn` 的统计接口补累计词数。**只读**，不回写 App。`bbdcView()` 把采集结果裁成面板要看的紧凑形状（挡住 sid 摘要与临时目录）；`readBbdc()` 带 10 分钟缓存 + 并发去重。 |
 | `timer.js` | 番茄钟状态机：`start/pause/resume/reset/complete/reconcile`。真相是绝对时间戳，不用「还剩多少毫秒」。 |
-| `index.js` | **宿主半边**：`study_desk` 工具（11 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要。派生数据（复习队列（每张带 `curve`）/统计/`forecast` 七日预报/`plan` 今日建议/周报/标签/单词打卡）一律由 `desk.js` / `bbdc.js` 算好再随快照发出。 |
-| `client.js` | **客户端半边**：整页看板（复习队列 / 过滤栏 / 热力图 / 周报 / 复盘）+ 独立的「单词打卡」面板 + 设置页 + 迷你条，注册 6 个槽位（2 个侧栏入口 + 2 个 main + 1 个迷你条 + 1 个设置节）。 |
+| `index.js` | **宿主半边**：`study_desk` 工具（11 个 action）+ `/api/dsh-study-desk` 路由 + 往 system prompt 注入今日摘要（含每日计划表的「现在该做什么」）。派生数据（复习队列（每张带 `curve`）/统计/`forecast` 七日预报/`plan` 今日建议/`dayPlan` 计划表当前时段/周报/标签/单词打卡）一律由 `desk.js` / `bbdc.js` 算好再随快照发出。 |
+| `client.js` | **客户端半边**：整页看板（复习队列 / 过滤栏 / 热力图 / 周报 / 复盘 / 每日计划表）+ 独立的「单词打卡」面板 + 设置页 + 迷你条与计划表两个悬浮件，注册 7 个槽位（2 个侧栏入口 + 2 个 main + 2 个 shell.overlay + 1 个设置节）。 |
 | `cordis.patch.yml` | 让宿主把本插件 insert 进 loader 树。 |
 | `package.json` | `dsh.bundle.patch` 指向上面那个 patch；`dsh.client` 声明客户端半边与注入的运行时包。 |
-| `test/desk.test.js` | 30 个单测，`node --test`。 |
+| `test/desk.test.js` | 数据层主套件（含番茄钟状态机、AI 起钟会话标记、每日计划表归一化与区间判定），`node --test`。 |
 | `test/markdown.test.js` | 4 个单测：导出→读回往返、手写 Markdown 读回、id 命中即更新。 |
 | `test/bbdc.test.js` | 13 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体、时长两边取新、本地刷盘滞后标记等。 |
-| `test/mini-dock.test.js` | 5 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除、声明了 `no-drag`、不许停进宿主标题栏那条拖拽带。 |
+| `test/mini-dock.test.js` | 8 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除、声明了 `no-drag`、不许停进宿主标题栏那条拖拽带，以及计划表悬浮件的同款坑位守卫（no-drag / pointer-events / z-index / 默认位不重叠 / 钳制函数不许另起炉灶）。 |
 | `test/style.test.js` | 6 个单测（视觉层守卫）：CSS 里 hex 必须为 0、饼图 8 色不许退回语义色、不许有零点几像素字号、标题不用衬线、字阶挂在各根上、图表配色归属。 |
 | `tools/client-loader.mjs` | 把 `client.js` 这个 loader 格式的 bundle 在纯 Node 里载进来、取 `exports.__test`。两个测试文件共用一份，免得各写一套桩。放在 `tools/` 是因为 `node --test` 会把 `test/` 下每个文件都当测试跑。 |
 | `apply-probe.mjs` | 离线冒烟：用 stub ctx 把两侧 `apply()` 真跑一遍，不启动 DSH 就能抓加载期错误。 |
@@ -62,6 +65,9 @@
    或 Windows 用户目录那种绝对路径（`C:` 下 Users 里带真名的那种）—— CI 会 grep 直接红。
 7. **复习排期、队列排序、周报、标签聚合只在 `desk.js` 一处算。** 宿主把 `review / due / tags / weekly / journal`
    随快照发出，`client.js` 只画不算。浏览器里再实现一遍 SM-2 迟早和宿主对不上。
+   每日计划表的「现在在哪个区间」（`dailyPlanNow`）同理只在 desk.js：注入 system prompt 与快照
+   `dayPlan` 都从它取。客户端那份 `pmin()` 只做钟表换算（当前分钟落在哪个区间、剩几分钟），
+   和画倒计时是一档的事，不是领域算法——别把排序、校验再写一遍进浏览器。
 8. **Markdown 读回是「合并」不是「覆盖」**：`desk.md` 里没出现的卡不动；靠行尾 `<!-- desk:id:… -->` 对回原卡，
    注释被删就当新卡。导出的 Markdown 里不许出现本机绝对路径。
 9. **不背单词那边只读，且凭据不出门。** `bbdc.js` 只读 App 数据与官方 H5 的公开统计接口，
@@ -78,6 +84,21 @@
    规则只写在 `bbdcView()` 一处（客户端是独立 bundle、只能 `require react`，两边各写一遍必散）。
    另有 `durationAsOf` / `durationMightBeStale`：只在「本地落后且云端没兜住」时提醒，
    判定今天用 `desk.js` 的 `dayKey`（本地时区），**不能用 `toISOString()`** —— UTC+8 的早上会认错天。
+10. **AI 起番茄钟走门禁，走完的提醒发回起钟的会话。** 这是用户点名的督促链路：
+   - **门禁**：工具 `focus` 起钟必须 `task=` 一张**「进行中」**的卡，不挂卡 / 卡不存在 / 卡不在 doing
+     都直接拒绝，报错文案教完整流程（`add` 建卡 → `move` 到 `doing` → `focus` 挂卡）。目的是逼 AI 把它
+     安排的任务真的落到待办墙上，周报和近 30 天统计才对得上。**只限工具路径**——客户端 POST
+     `timer.start`（手动起钟）不受限制。
+   - **会话标记**：AI 起钟时把 `exec.agent.id`（= 会话 id）存进 `state.timer`（`by:'ai'` + `sessionId`）；
+     专注走完自动摆的休息**继承**这两个字段（链条到休息结束为止），手动提前结束摆的休息也继承。
+   - **提醒发送**：`withDesk` 结账时把走完的段收进 sink，`emitTimerEnd` 过滤（开关关了 / 不是 AI 链 /
+     段走完超过 10 分钟才被结账的都跳过）后调钩子：`ctx.get('agents').get(sessionId).followup(消息)`。
+     这是官方 `dsh-goal-round-driver` 的同款姿势（app.asar 里有源码可对照）；`followup` 空闲就开新一轮、
+     跑着就排下一轮。消息 `role:'user'`、`source.kind:'plugin'`，正文自带「这是系统自动消息，不是用户发言」。
+     宿主侧另有 10 秒看门狗：面板没开没人轮询 desk 时由它兜底结账。
+   - **开关**：`settings.notifySessionOnTimerEnd`（默认开，`!== false` 即开，语义同 `injectPrompt`），
+     设置页有勾选项。**手动停钟（客户端按钮 / 工具 `off=true`）永不提醒**；会话已关闭（agents 里没有）
+     就静默放弃，不排队不补发。
 
 ## 三个必须知道的坑
 
@@ -184,8 +205,8 @@ ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk
 ## 测试
 
 ```bash
-node --test             # 58 个单测：数据层 + 番茄钟状态机 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析与时长取新 + 迷你条落点与拖拽带 + 视觉层守卫（hex / 字阶 / 配色归属）
-node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op / 快照新字段
+node --test             # 73 个单测：数据层 + 番茄钟状态机 + AI 起钟会话标记 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析与时长取新 + 迷你条/计划表悬浮件落点与拖拽带 + 每日计划表 + 视觉层守卫（hex / 字阶 / 配色归属）
+node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op / 快照新字段 / AI 起钟门禁与会话提醒 / 每日计划表校验
 node install.mjs --check  # 体检：本目录与某个 profile 的接线是否完整
 ```
 
@@ -199,7 +220,7 @@ node install.mjs --check  # 体检：本目录与某个 profile 的接线是否�
 拿一份 React 18 的 UMD 构建（本机任意 `node_modules/react{,-dom}/umd/*.production.min.js`），
 写一个 HTML 复刻宿主外壳（`frame > centerCol(flex, overflow:hidden) + overlayLayer(z-index:20, pointer-events:none)`），
 塞进宿主的 `body{--dsw-alias-*}` 主题 token，替换 `window.fetch` 成一个小假宿主，
-然后用 `def.factory(require)` 拿到模块、`ReactDOM.createRoot` 把四个槽位挂出来，
+然后用 `def.factory(require)` 拿到模块、`ReactDOM.createRoot` 把七个槽位挂出来，
 再用真 `MouseEvent('click')` 点一遍按钮、断言 POST 出去的 op。
 暗色只要给 `<body>` 加 `data-ds-dark-theme`（注意：暗色标记在 **body** 上，不是 html）。
 无头 Edge 出图与结果：`msedge --headless=new --dump-dom`（把断言写进一个屏外 `<pre>`）+ `--screenshot`。

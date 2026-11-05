@@ -135,6 +135,7 @@ export function toMarkdown(state, now = Date.now(), extra = {}) {
           ['est', t.estimateMin || null],
           ['spent', byTask.get ? byTask.get(t.id) : null],
           ['tags', (t.tags || []).join('|') || null],
+          ['ddl', t.dueDate],
           ['due', t.review && t.review.due],
           ['interval', t.review && t.review.due ? t.review.intervalDays : null],
           ['ease', t.review && t.review.due ? t.review.ease : null],
@@ -233,6 +234,7 @@ export function fromMarkdown(text) {
         status: meta.done ? 'done' : status,
         note: '',
         estimateMin: Number(meta.est) || 0,
+        dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(meta.ddl || '')) ? String(meta.ddl) : null,
         tags: normalizeTags((meta.tags || '').split('|')),
         review: meta.due
           ? {
@@ -270,7 +272,7 @@ export function mergeMarkdown(state, parsed) {
   for (const card of parsed.cards || []) {
     const existing = card.id ? state.tasks.find((t) => t.id === card.id) : null
     if (existing) {
-      const changed = ['title', 'subject', 'note', 'estimateMin', 'tags', 'review'].some((k) => {
+      const changed = ['title', 'subject', 'note', 'estimateMin', 'dueDate', 'tags', 'review'].some((k) => {
         const a = JSON.stringify(existing[k])
         const b = JSON.stringify(card[k])
         if (a === b) return false
@@ -295,6 +297,7 @@ export function mergeMarkdown(state, parsed) {
       subject: card.subject,
       note: card.note,
       estimateMin: card.estimateMin,
+      dueDate: card.dueDate || null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       doneAt: card.status === 'done' ? (card.doneAt || Date.now()) : null,

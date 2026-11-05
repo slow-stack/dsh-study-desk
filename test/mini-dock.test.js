@@ -63,3 +63,38 @@ test('迷你条不许停进 Windows 标题栏那条拖拽带', () => {
   attrs.delete('data-windows-titlebar')
   assert.equal(clampMiniPos({ x: 500, y: 6 }, W, H).y, 6, '非 Windows 标题栏不该凭空留 40px')
 })
+
+// 每日计划表悬浮件是第二个 shell.overlay：坑位规矩必须与迷你条一致，
+// 否则就是「看得见、点不动、拖不动」那类真机故障的复刻。
+
+test('计划表悬浮件声明 no-drag 与自持命中（pointer-events / z-index:900）', () => {
+  const { CSS } = loadClient()
+  for (const sel of ['.sd-plandock', '.sd-plandock-fab']) {
+    const rule = CSS.split('}').find((r) => r.startsWith(`${sel}{`))
+    assert.ok(rule, `${sel} 规则没找到`)
+    assert.match(rule, /-webkit-app-region:\s*no-drag/, `${sel} 没声明 no-drag`)
+    assert.match(rule, /pointer-events:\s*auto/, `${sel} 没声明 pointer-events:auto`)
+    assert.match(rule, /z-index:\s*900/, `${sel} 没声明 z-index:900`)
+  }
+})
+
+test('计划表悬浮件默认位在迷你条上方，两个悬浮件默认位不打架', () => {
+  const { CSS } = loadClient()
+  const ruleFor = (sel) => CSS.split('}').find((r) => r.startsWith(`${sel}{`))
+  const mini = ruleFor('.sd-mini')
+  const plan = ruleFor('.sd-plandock')
+  assert.match(mini, /bottom:\s*18px/, '迷你条默认 bottom 变了的话这条也要跟着改')
+  assert.match(plan, /bottom:\s*64px/, '计划表悬浮件默认压在迷你条身上了')
+})
+
+test('计划表悬浮件也走 clampMiniPos（标题栏拖拽带的守卫自动继承）', () => {
+  // 拖动手势与钳制函数是同一份：源码里 PlanDock 用的就是 clampMiniPos，
+  // 这里用形状校验锁住「没另起炉灶」——另写一份迟早漏掉标题栏那条带。
+  const code = readClientSource()
+  const dockStart = code.indexOf('function PlanDock(')
+  const dockEnd = code.indexOf('// 设置页', dockStart)
+  assert.ok(dockStart > 0 && dockEnd > dockStart, 'PlanDock 没找到')
+  const dock = code.slice(dockStart, dockEnd)
+  assert.ok(dock.includes('clampMiniPos'), 'PlanDock 没用 clampMiniPos 钳制落点')
+  assert.ok(!/function\s+clamp/.test(dock), 'PlanDock 里另写了一份钳制实现')
+})
