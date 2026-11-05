@@ -16,7 +16,7 @@
   与 `timerEndSource()` 统一产出，不再手写。
 - **回归测试 + 静态扫**：新增 `test/message-source.test.js`（4 条）。除了断言工厂产出的 source
   能过宿主同款准入，还静态扫源码禁止裸 `kind: 'plugin'` 回潮；`apply-probe.mjs` 里那条端到端断言
-  同步改成新 kind。单测 73 → 77。
+  同步改成新 kind。单测 73 → 78。
 
 ## v0.8.0
 
