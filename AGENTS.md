@@ -36,6 +36,7 @@
 | `test/markdown.test.js` | 4 个单测：导出→读回往返、手写 Markdown 读回、id 命中即更新。 |
 | `test/bbdc.test.js` | 13 个单测：prefs 解析、按月求和（累计 293 词就是 48 个月的 `learnNum` 相加）、`sid` 编码变体、时长两边取新、本地刷盘滞后标记等。 |
 | `test/mini-dock.test.js` | 8 个单测：迷你条松手不贴边、仍会被收回视口、吸附实现已移除、声明了 `no-drag`、不许停进宿主标题栏那条拖拽带，以及计划表悬浮件的同款坑位守卫（no-drag / pointer-events / z-index / 默认位不重叠 / 钳制函数不许另起炉灶）。 |
+| `test/message-source.test.js` | 4 个单测（会话消息 source 准入）：kind 必须是 `plugin:dsh-study-desk`、工厂出的 source 能过宿主 v4 准入、`at` 默认取当前时间且不共享同一对象，外加一条**静态扫**把裸 `kind: 'plugin'` 挡在提交前。 |
 | `test/style.test.js` | 6 个单测（视觉层守卫）：CSS 里 hex 必须为 0、饼图 8 色不许退回语义色、不许有零点几像素字号、标题不用衬线、字阶挂在各根上、图表配色归属。 |
 | `tools/client-loader.mjs` | 把 `client.js` 这个 loader 格式的 bundle 在纯 Node 里载进来、取 `exports.__test`。两个测试文件共用一份，免得各写一套桩。放在 `tools/` 是因为 `node --test` 会把 `test/` 下每个文件都当测试跑。 |
 | `apply-probe.mjs` | 离线冒烟：用 stub ctx 把两侧 `apply()` 真跑一遍，不启动 DSH 就能抓加载期错误。 |
@@ -94,7 +95,11 @@
    - **提醒发送**：`withDesk` 结账时把走完的段收进 sink，`emitTimerEnd` 过滤（开关关了 / 不是 AI 链 /
      段走完超过 10 分钟才被结账的都跳过）后调钩子：`ctx.get('agents').get(sessionId).followup(消息)`。
      这是官方 `dsh-goal-round-driver` 的同款姿势（app.asar 里有源码可对照）；`followup` 空闲就开新一轮、
-     跑着就排下一轮。消息 `role:'user'`、`source.kind:'plugin'`，正文自带「这是系统自动消息，不是用户发言」。
+     跑着就排下一轮。消息 `role:'user'`、`source.kind:'plugin:dsh-study-desk'`（**必须带 `plugin:` 前缀**——
+     裸 `'plugin'` 是宿主会话格式 v4 已退役的写法，落盘会被整条拒绝，报
+     `format v4 message requires a producer-owned source kind`，整个会话当场跑不起来；
+     kind 由 `MESSAGE_SOURCE_KIND` / `timerEndSource()` 统一产出，别手写），
+     正文自带「这是系统自动消息，不是用户发言」。
      宿主侧另有 10 秒看门狗：面板没开没人轮询 desk 时由它兜底结账。
    - **开关**：`settings.notifySessionOnTimerEnd`（默认开，`!== false` 即开，语义同 `injectPrompt`），
      设置页有勾选项。**手动停钟（客户端按钮 / 工具 `off=true`）永不提醒**；会话已关闭（agents 里没有）
@@ -205,7 +210,7 @@ ctx.set('studyDesk', { ... })       // 抛 Error: cannot set property "studyDesk
 ## 测试
 
 ```bash
-node --test             # 73 个单测：数据层 + 番茄钟状态机 + AI 起钟会话标记 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析与时长取新 + 迷你条/计划表悬浮件落点与拖拽带 + 每日计划表 + 视觉层守卫（hex / 字阶 / 配色归属）
+node --test             # 77 个单测：数据层 + 番茄钟状态机 + AI 起钟会话标记 + 复习排期 + 遗忘曲线/预报/建议 + Markdown 往返 + 不背单词 prefs 解析与时长取新 + 迷你条/计划表悬浮件落点与拖拽带 + 每日计划表 + 视觉层守卫（hex / 字阶 / 配色归属）+ 消息 source kind 准入（含静态扫防回潮）
 node apply-probe.mjs    # 离线冒烟：stub ctx 跑两侧 apply()，检查工具 / 路由 / 槽位注册 / 新 op / 快照新字段 / AI 起钟门禁与会话提醒 / 每日计划表校验
 node install.mjs --check  # 体检：本目录与某个 profile 的接线是否完整
 ```

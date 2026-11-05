@@ -182,6 +182,18 @@ const pluginVersion = (() => {
   } catch { return '' }
 })()
 
+// 会话消息的 source kind 必须是「生产者自己命名」的：宿主会话格式 v4 把旧的共享包装
+// （kind 一律写 plugin、只靠 plugin 字段认来源的那种）判为退役语法，落盘即整条拒绝，报
+//   format v4 message requires a producer-owned source kind
+// （app.asar: lib/types/message-sources.js 的 source()）。所以插件写给会话的消息一律用
+// `plugin:<包名>` 这种带前缀的 kind —— 宿主只要求「非空且不是 plugin」，前缀正是来源标记。
+export const MESSAGE_SOURCE_KIND = `plugin:${name}`
+
+/** 番茄钟走完那条自动提醒的 source（导出仅为单测能直接断言形状）。 */
+export function timerEndSource(at = Date.now()) {
+  return { kind: MESSAGE_SOURCE_KIND, plugin: name, event: 'timer-end', at }
+}
+
 // ---------------------------------------------------------------------------
 // 串行化的状态访问：客户端会 POST，模型会调工具，两边可能同时改同一份 JSON。
 // 用一条 promise 链把「读-改-写」串起来，避免后写的把先写的覆盖掉。
@@ -853,7 +865,10 @@ export function apply(ctx, config) {
       id: randomUUID(),
       role: 'user',
       content: [{ type: 'text', text: timerEndText(info) }],
-      source: { kind: 'plugin', plugin: name, event: 'timer-end', at: Date.now() },
+      // kind 必须是生产者自己命名的（plugin:<包名>）：裸 'plugin' 是退役写法，
+      // 宿主会话格式 v4 会整条拒绝这个 splice，会话当场报
+      //   format v4 message requires a producer-owned source kind
+      source: timerEndSource(),
     })
   }
 
